@@ -8,8 +8,8 @@ const _right = new THREE.Vector3();
 const SPEED_SCALE = 12.5;
 const LINEAR_DAMP = 0.1;
 const JUMP_SPEED = 5.5;
-const VEHICLE_SPHERE_RADIUS = 1.0;
-const GROUNDED_HEIGHT = 1.2;
+const VEHICLE_SPHERE_RADIUS = 0.5;
+const GROUNDED_HEIGHT = 0.7;
 const GROUNDED_VERTICAL_SPEED = 1.5;
 const AIR_CONTROL_FACTOR = 0.35;
 

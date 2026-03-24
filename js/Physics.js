@@ -3,17 +3,16 @@ import { rigidBody, box, sphere, MotionType, MotionQuality } from 'crashcat';
 import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
-const VEHICLE_SPHERE_RADIUS = 1.0;
+const VEHICLE_SPHERE_RADIUS = 0.5;
 const _tmpVec3A = new THREE.Vector3();
 const _tmpVec3B = new THREE.Vector3();
 const _tmpVec2A = new THREE.Vector2();
 const _tmpVec2B = new THREE.Vector2();
-const _probeAxes = [
-	new THREE.Vector2(),
-	new THREE.Vector2(),
-	new THREE.Vector2(),
-	new THREE.Vector2(),
-];
+const _probeCenter2D = new THREE.Vector2();
+const _probeAxisGroundX = new THREE.Vector2();
+const _probeAxisGroundZ = new THREE.Vector2();
+const WALL_PROBE_BOUNCE = 0.2;
+const CAPSULE_SAMPLE_OFFSETS = [ - 1, - 0.5, 0, 0.5, 1 ];
 
 function addDebugBox( group, halfExtents, position, quaternion ) {
 
@@ -75,8 +74,10 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 
 			wallProbeBoxes.push( {
 				centerX: position[ 0 ],
+				centerY: position[ 1 ],
 				centerZ: position[ 2 ],
 				halfX: halfExtents[ 0 ],
+				halfY: halfExtents[ 1 ],
 				halfZ: halfExtents[ 2 ],
 				angle: - aMid,
 			} );
@@ -121,13 +122,15 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 					restitution: 0.1,
 				} );
 
-				wallProbeBoxes.push( {
-					centerX: position[ 0 ],
-					centerZ: position[ 2 ],
-					halfX: halfExtents[ 0 ],
-					halfZ: halfExtents[ 2 ],
-					angle: rad,
-				} );
+					wallProbeBoxes.push( {
+						centerX: position[ 0 ],
+						centerY: position[ 1 ],
+						centerZ: position[ 2 ],
+						halfX: halfExtents[ 0 ],
+						halfY: halfExtents[ 1 ],
+						halfZ: halfExtents[ 2 ],
+						angle: rad,
+					} );
 
 				if ( debugGroup ) addDebugBox( debugGroup, halfExtents, position, quaternion );
 
@@ -205,9 +208,11 @@ export function createVehicleWallProbe( model ) {
 
 		return {
 			offsetX: 0,
+			offsetY: 0.75,
 			offsetZ: 0,
-			halfX: 1.1,
-			halfZ: 2.0,
+			radius: 1.1,
+			halfY: 0.75,
+			halfLength: 2.0,
 		};
 
 	}
@@ -217,75 +222,84 @@ export function createVehicleWallProbe( model ) {
 
 	return {
 		offsetX: _tmpVec3A.x,
+		offsetY: _tmpVec3A.y,
 		offsetZ: _tmpVec3A.z,
-		halfX: Math.max( _tmpVec3B.x * 0.5, 0.25 ),
-		halfZ: Math.max( _tmpVec3B.z * 0.5, 0.25 ),
+		radius: Math.max( Math.min( _tmpVec3B.x * 0.5, _tmpVec3B.z * 0.5 ), 0.25 ),
+		halfY: Math.max( _tmpVec3B.y * 0.5, 0.25 ),
+		halfLength: Math.max( _tmpVec3B.z * 0.5, 0.25 ),
 	};
 
 }
 
-function projectBoxRadius( halfX, halfZ, axis, boxAxisX, boxAxisZ ) {
-
-	return Math.abs( axis.dot( boxAxisX ) ) * halfX + Math.abs( axis.dot( boxAxisZ ) ) * halfZ;
-
-}
-
-function computeBoxWallPush( probeCenter, probeHalfX, probeHalfZ, probeAngle, wall ) {
-
-	const cosProbe = Math.cos( probeAngle );
-	const sinProbe = Math.sin( probeAngle );
-	const probeAxisX = _probeAxes[ 0 ].set( cosProbe, sinProbe );
-	const probeAxisZ = _probeAxes[ 1 ].set( - sinProbe, cosProbe );
+function computeCircleWallPush( circleCenter, radius, wall ) {
 
 	const cosWall = Math.cos( wall.angle );
 	const sinWall = Math.sin( wall.angle );
-	const wallAxisX = _probeAxes[ 2 ].set( cosWall, sinWall );
-	const wallAxisZ = _probeAxes[ 3 ].set( - sinWall, cosWall );
+	const dx = circleCenter.x - wall.centerX;
+	const dz = circleCenter.y - wall.centerZ;
 
-	const delta = _tmpVec2A.set( probeCenter.x - wall.centerX, probeCenter.y - wall.centerZ );
-	let bestAxis = null;
-	let bestOverlap = Infinity;
+	const localX = dx * cosWall + dz * sinWall;
+	const localZ = - dx * sinWall + dz * cosWall;
 
-	for ( const axis of _probeAxes ) {
+	const clampedX = THREE.MathUtils.clamp( localX, - wall.halfX, wall.halfX );
+	const clampedZ = THREE.MathUtils.clamp( localZ, - wall.halfZ, wall.halfZ );
+	const deltaX = localX - clampedX;
+	const deltaZ = localZ - clampedZ;
+	const distSq = deltaX * deltaX + deltaZ * deltaZ;
 
-		const axisLengthSq = axis.lengthSq();
-		if ( axisLengthSq === 0 ) continue;
+	if ( distSq > 1e-8 ) {
 
-		const normalizedAxis = _tmpVec2B.copy( axis ).multiplyScalar( 1 / Math.sqrt( axisLengthSq ) );
-		const probeRadius = projectBoxRadius( probeHalfX, probeHalfZ, normalizedAxis, probeAxisX, probeAxisZ );
-		const wallRadius = projectBoxRadius( wall.halfX, wall.halfZ, normalizedAxis, wallAxisX, wallAxisZ );
-		const distance = Math.abs( delta.dot( normalizedAxis ) );
-		const overlap = probeRadius + wallRadius - distance;
-
+		const dist = Math.sqrt( distSq );
+		const overlap = radius - dist;
 		if ( overlap <= 0 ) return null;
-		if ( overlap < bestOverlap ) {
 
-			bestOverlap = overlap;
-			bestAxis = normalizedAxis.clone();
-
-		}
+		const normalLocalX = deltaX / dist;
+		const normalLocalZ = deltaZ / dist;
+		return _tmpVec2A.set(
+			( normalLocalX * cosWall - normalLocalZ * sinWall ) * ( overlap + 0.001 ),
+			( normalLocalX * sinWall + normalLocalZ * cosWall ) * ( overlap + 0.001 )
+		).clone();
 
 	}
 
-	if ( ! bestAxis ) return null;
+	const penX = wall.halfX - Math.abs( localX );
+	const penZ = wall.halfZ - Math.abs( localZ );
 
-	if ( delta.dot( bestAxis ) < 0 ) bestAxis.negate();
+	if ( penX < penZ ) {
 
-	return bestAxis.multiplyScalar( bestOverlap + 0.001 );
+		const signX = localX >= 0 ? 1 : - 1;
+		return _tmpVec2A.set(
+			cosWall * signX * ( radius + penX + 0.001 ),
+			sinWall * signX * ( radius + penX + 0.001 )
+		).clone();
+
+	}
+
+	const signZ = localZ >= 0 ? 1 : - 1;
+	return _tmpVec2A.set(
+		- sinWall * signZ * ( radius + penZ + 0.001 ),
+		cosWall * signZ * ( radius + penZ + 0.001 )
+	).clone();
 
 }
 
 export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicleWallProbe ) {
 
-	if ( ! vehicle?.rigidBody || ! wallProbeBoxes?.length || ! vehicleWallProbe ) return false;
+	if ( ! vehicle?.rigidBody || ! wallProbeBoxes?.length || ! vehicleWallProbe ) return 0;
 
-	const yaw = vehicle.container.rotation.y;
-	const cosYaw = Math.cos( yaw );
-	const sinYaw = Math.sin( yaw );
-	const probeCenter = new THREE.Vector2(
-		vehicle.spherePos.x + vehicleWallProbe.offsetX * cosYaw + vehicleWallProbe.offsetZ * sinYaw,
-		vehicle.spherePos.z - vehicleWallProbe.offsetX * sinYaw + vehicleWallProbe.offsetZ * cosYaw
+	const container = vehicle.container;
+	const forward = _tmpVec3A.set( 0, 0, 1 ).applyQuaternion( container.quaternion );
+	forward.y = 0;
+	if ( forward.lengthSq() > 0 ) forward.normalize();
+	const right = _tmpVec3B.set( 1, 0, 0 ).applyQuaternion( container.quaternion );
+	right.y = 0;
+	if ( right.lengthSq() > 0 ) right.normalize();
+	const probeCenter = _probeCenter2D.set(
+		vehicle.spherePos.x + right.x * vehicleWallProbe.offsetX + forward.x * vehicleWallProbe.offsetZ,
+		vehicle.spherePos.z + right.z * vehicleWallProbe.offsetX + forward.z * vehicleWallProbe.offsetZ
 	);
+	const probeAxisGroundZ = _probeAxisGroundZ.set( forward.x, forward.z );
+	const segmentHalfLength = Math.max( vehicleWallProbe.halfLength - vehicleWallProbe.radius, 0 );
 
 	let corrected = false;
 
@@ -296,13 +310,24 @@ export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicle
 
 		for ( const wall of wallProbeBoxes ) {
 
-			const push = computeBoxWallPush(
-				probeCenter,
-				vehicleWallProbe.halfX,
-				vehicleWallProbe.halfZ,
-				yaw,
-				wall
-			);
+			let push = null;
+
+			for ( const sampleOffset of CAPSULE_SAMPLE_OFFSETS ) {
+
+				const sampleCenter = _tmpVec2B.set(
+					probeCenter.x + probeAxisGroundZ.x * segmentHalfLength * sampleOffset,
+					probeCenter.y + probeAxisGroundZ.y * segmentHalfLength * sampleOffset
+				);
+				const samplePush = computeCircleWallPush(
+					sampleCenter,
+					vehicleWallProbe.radius,
+					wall
+				);
+
+				if ( ! samplePush ) continue;
+				if ( ! push || samplePush.lengthSq() > push.lengthSq() ) push = samplePush.clone();
+
+			}
 
 			if ( ! push ) continue;
 
@@ -325,7 +350,7 @@ export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicle
 
 	}
 
-	if ( ! corrected ) return false;
+	if ( ! corrected ) return 0;
 
 	rigidBody.setPosition( world, vehicle.rigidBody, [
 		vehicle.spherePos.x,
@@ -343,11 +368,13 @@ export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicle
 
 		correction.normalize();
 		const intoWall = velocity[ 0 ] * correction.x + velocity[ 2 ] * correction.y;
+		const impactVelocity = Math.max( 0, - intoWall );
 
 		if ( intoWall < 0 ) {
 
-			const nextVelocityX = velocity[ 0 ] - correction.x * intoWall;
-			const nextVelocityZ = velocity[ 2 ] - correction.y * intoWall;
+			const reflectedNormalSpeed = - intoWall * ( 1 + WALL_PROBE_BOUNCE );
+			const nextVelocityX = velocity[ 0 ] + correction.x * reflectedNormalSpeed;
+			const nextVelocityZ = velocity[ 2 ] + correction.y * reflectedNormalSpeed;
 			rigidBody.setLinearVelocity( world, vehicle.rigidBody, [
 				nextVelocityX,
 				velocity[ 1 ],
@@ -358,6 +385,8 @@ export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicle
 
 		}
 
+		return impactVelocity;
+
 	}
 
 	vehicle.container.position.set(
@@ -366,7 +395,7 @@ export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicle
 		vehicle.spherePos.z
 	);
 
-	return true;
+	return 0;
 
 }
 
