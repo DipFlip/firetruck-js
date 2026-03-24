@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 	<title>Track Editor</title>
 	<style>
 		* { box-sizing: border-box; }
 		body { margin: 0; overflow: hidden; background: #000; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-		canvas { display: block; }
+		canvas { display: block; touch-action: none; }
 
 		#toolbar {
 			position: absolute;
@@ -918,10 +918,9 @@
 
 	} );
 
-	// ─── Input ────────────────────────────────────────────────
+	// ─── Input (pointer events) ───────────────────────────────
 
 	let isPanning = false;
-	let isSpacePanning = false;
 	let isDrawing = false;
 	let isErasing = false;
 	let panStart = { x: 0, y: 0 };
@@ -929,14 +928,20 @@
 	let lastDrawCell = null;
 	let spaceDown = false;
 
-	renderer.domElement.addEventListener( 'contextmenu', ( e ) => e.preventDefault() );
+	// Track active pointers for multi-touch (pinch/pan)
+	const pointers = new Map();
+	let pinchStartDist = 0;
+	let pinchStartZoom = 1;
+
+	const el = renderer.domElement;
+
+	el.addEventListener( 'contextmenu', ( e ) => e.preventDefault() );
 
 	function handleDraw( clientX, clientY ) {
 
 		const cell = screenToGrid( clientX, clientY );
 		if ( ! cell ) return;
 
-		// Skip if same cell as last draw
 		if ( lastDrawCell && lastDrawCell.gx === cell.gx && lastDrawCell.gz === cell.gz ) return;
 		lastDrawCell = cell;
 
@@ -952,24 +957,60 @@
 
 	}
 
-	function startPan( e ) {
+	function getPinchDist() {
 
-		isPanning = true;
-		panStart.x = e.clientX;
-		panStart.y = e.clientY;
-		camStart.x = camTarget.x;
-		camStart.z = camTarget.z;
-		renderer.domElement.style.cursor = 'grabbing';
+		const pts = [ ...pointers.values() ];
+		const dx = pts[ 1 ].x - pts[ 0 ].x;
+		const dy = pts[ 1 ].y - pts[ 0 ].y;
+		return Math.sqrt( dx * dx + dy * dy );
 
 	}
 
-	renderer.domElement.addEventListener( 'mousedown', ( e ) => {
+	function getPinchMid() {
 
-		// Middle mouse, ctrl+left, or space+left for panning
+		const pts = [ ...pointers.values() ];
+		return {
+			x: ( pts[ 0 ].x + pts[ 1 ].x ) / 2,
+			y: ( pts[ 0 ].y + pts[ 1 ].y ) / 2
+		};
+
+	}
+
+	el.addEventListener( 'pointerdown', ( e ) => {
+
+		el.setPointerCapture( e.pointerId );
+		pointers.set( e.pointerId, { x: e.clientX, y: e.clientY } );
+
+		// Two pointers → switch to pan/pinch
+		if ( pointers.size === 2 ) {
+
+			isDrawing = false;
+			isErasing = false;
+			isPanning = true;
+
+			const mid = getPinchMid();
+			panStart.x = mid.x;
+			panStart.y = mid.y;
+			camStart.x = camTarget.x;
+			camStart.z = camTarget.z;
+			pinchStartDist = getPinchDist();
+			pinchStartZoom = camera.zoom;
+			return;
+
+		}
+
+		if ( pointers.size > 2 ) return;
+
+		// Single pointer
+		// Middle mouse, ctrl+click, or space+click → pan
 		if ( e.button === 1 || ( e.button === 0 && ( e.ctrlKey || e.metaKey || spaceDown ) ) ) {
 
-			startPan( e );
-			e.preventDefault();
+			isPanning = true;
+			panStart.x = e.clientX;
+			panStart.y = e.clientY;
+			camStart.x = camTarget.x;
+			camStart.z = camTarget.z;
+			el.style.cursor = 'grabbing';
 			return;
 
 		}
@@ -999,17 +1040,36 @@
 
 	} );
 
-	renderer.domElement.addEventListener( 'mousemove', ( e ) => {
+	el.addEventListener( 'pointermove', ( e ) => {
 
+		pointers.set( e.pointerId, { x: e.clientX, y: e.clientY } );
+
+		// Two-pointer pan + pinch
+		if ( pointers.size === 2 && isPanning ) {
+
+			const mid = getPinchMid();
+			const scale = frustum * 2 / window.innerHeight / camera.zoom;
+			camTarget.x = camStart.x - ( mid.x - panStart.x ) * scale;
+			camTarget.z = camStart.z - ( mid.y - panStart.y ) * scale;
+			camera.position.x = camTarget.x;
+			camera.position.z = camTarget.z;
+			camera.lookAt( camTarget.x, 0, camTarget.z );
+
+			const dist = getPinchDist();
+			camera.zoom = Math.max( 0.1, Math.min( 10, pinchStartZoom * ( dist / pinchStartDist ) ) );
+			camera.updateProjectionMatrix();
+			return;
+
+		}
+
+		// Single-pointer pan
 		if ( isPanning ) {
 
 			const zoom = camera.zoom;
 			const dx = ( e.clientX - panStart.x ) / window.innerWidth * frustum * 2 * ( window.innerWidth / window.innerHeight ) / zoom;
 			const dz = ( e.clientY - panStart.y ) / window.innerHeight * frustum * 2 / zoom;
-
 			camTarget.x = camStart.x - dx;
 			camTarget.z = camStart.z - dz;
-
 			camera.position.x = camTarget.x;
 			camera.position.z = camTarget.z;
 			camera.lookAt( camTarget.x, 0, camTarget.z );
@@ -1024,59 +1084,65 @@
 
 		}
 
-		const cell = screenToGrid( e.clientX, e.clientY );
-		if ( cell ) {
+		// Hover ghost (mouse only)
+		if ( e.pointerType === 'mouse' ) {
 
-			hoveredCell = cell;
-			updateGhost( cell.gx, cell.gz );
+			const cell = screenToGrid( e.clientX, e.clientY );
+			if ( cell ) {
 
-		} else {
+				hoveredCell = cell;
+				updateGhost( cell.gx, cell.gz );
 
-			hoveredCell = null;
-			clearGhost();
+			} else {
+
+				hoveredCell = null;
+				clearGhost();
+
+			}
 
 		}
 
 	} );
 
-	window.addEventListener( 'mouseup', () => {
+	window.addEventListener( 'pointerup', ( e ) => {
 
-		isPanning = false;
-		isDrawing = false;
-		isErasing = false;
-		lastDrawCell = null;
-		renderer.domElement.style.cursor = spaceDown ? 'grab' : '';
+		pointers.delete( e.pointerId );
+
+		if ( pointers.size === 0 ) {
+
+			isPanning = false;
+			isDrawing = false;
+			isErasing = false;
+			lastDrawCell = null;
+			el.style.cursor = spaceDown ? 'grab' : '';
+
+		}
 
 	} );
 
-	renderer.domElement.addEventListener( 'wheel', ( e ) => {
+	window.addEventListener( 'pointercancel', ( e ) => {
+
+		pointers.delete( e.pointerId );
+
+	} );
+
+	// Trackpad: two-finger scroll → pan, pinch (ctrl+wheel) → zoom
+	el.addEventListener( 'wheel', ( e ) => {
 
 		e.preventDefault();
 
-		// Pinch-to-zoom (ctrlKey is set by trackpad pinch)
 		if ( e.ctrlKey ) {
 
 			const zoomSpeed = 1.02;
-			if ( e.deltaY > 0 ) {
-
-				camera.zoom /= zoomSpeed;
-
-			} else {
-
-				camera.zoom *= zoomSpeed;
-
-			}
-
+			camera.zoom *= e.deltaY > 0 ? 1 / zoomSpeed : zoomSpeed;
 			camera.zoom = Math.max( 0.1, Math.min( 10, camera.zoom ) );
 			camera.updateProjectionMatrix();
 
 		} else {
 
-			// Two-finger pan
 			const scale = frustum * 2 / window.innerHeight / camera.zoom;
 			camTarget.x += e.deltaX * scale;
 			camTarget.z += e.deltaY * scale;
-
 			camera.position.x = camTarget.x;
 			camera.position.z = camTarget.z;
 			camera.lookAt( camTarget.x, 0, camTarget.z );
@@ -1092,7 +1158,7 @@
 			if ( ! spaceDown ) {
 
 				spaceDown = true;
-				renderer.domElement.style.cursor = 'grab';
+				el.style.cursor = 'grab';
 
 			}
 
@@ -1119,7 +1185,7 @@
 		if ( e.key === ' ' ) {
 
 			spaceDown = false;
-			if ( ! isPanning ) renderer.domElement.style.cursor = '';
+			if ( ! isPanning ) el.style.cursor = '';
 
 		}
 
