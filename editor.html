@@ -413,10 +413,42 @@
 
 	}
 
-	// Resolve tile for new cells: use presence mask, pick best pair if 3+
+	// Only count neighbors that can actually connect:
+	// either they already exit toward us, or they have a free (unconnected) exit
+	function getAvailableMask( gx, gz ) {
+
+		let mask = 0;
+		const dirs = [
+			[ 0, - 1, 8, 4 ], // N neighbor, sets N bit, check if neighbor has S exit
+			[ 0, 1, 4, 8 ],   // S neighbor, sets S bit, check if neighbor has N exit
+			[ 1, 0, 2, 1 ],   // E neighbor, sets E bit, check if neighbor has W exit
+			[ - 1, 0, 1, 2 ], // W neighbor, sets W bit, check if neighbor has E exit
+		];
+
+		for ( const [ dx, dz, bit, oppBit ] of dirs ) {
+
+			const neighbor = grid.get( cellKey( gx + dx, gz + dz ) );
+			if ( ! neighbor ) continue;
+
+			const exits = getCellExits( neighbor );
+
+			// Already has an exit facing us
+			if ( exits & oppBit ) { mask |= bit; continue; }
+
+			// Has a free (unconnected) exit — could change to face us
+			const conn = getConnectivityMask( gx + dx, gz + dz );
+			if ( bitCount( exits & conn ) < 2 ) mask |= bit;
+
+		}
+
+		return mask;
+
+	}
+
+	// Resolve tile for new cells: use available neighbors, pick best pair if 3+
 	function resolveNewTile( gx, gz ) {
 
-		const pMask = getPresenceMask( gx, gz );
+		const pMask = getAvailableMask( gx, gz );
 
 		if ( bitCount( pMask ) >= 3 ) {
 
@@ -501,18 +533,21 @@
 
 		} else {
 
-			// Existing cell: check if both exits are already connected.
-			// If so, don't change — avoid breaking existing connections.
-			const currentExits = getCellExits( cell );
+			// Existing cell: re-resolve, but don't break existing connections
 			const cMask = getConnectivityMask( gx, gz );
-			const connectedExits = currentExits & cMask;
-			const connectedCount = ( connectedExits >> 3 & 1 ) + ( connectedExits >> 2 & 1 )
-				+ ( connectedExits >> 1 & 1 ) + ( connectedExits & 1 );
+			const currentExits = getCellExits( cell );
+			const currentConnected = currentExits & cMask;
 
-			if ( connectedCount >= 2 ) return; // fully connected, don't change
-
-			// Has a free exit — re-resolve to pick up new connection
 			[ baseType, orient ] = resolveTile( gx, gz );
+
+			// Check if the proposed shape keeps all current connections
+			const proposedExits = getCellExits( { type: baseType, orient } );
+			if ( ( proposedExits & currentConnected ) !== currentConnected ) {
+
+				// Would disconnect something — keep current shape
+				return;
+
+			}
 
 		}
 
@@ -690,15 +725,15 @@
 			const nCell = grid.get( nKey );
 			if ( ! nCell ) continue;
 
-			// Skip neighbors that are already fully connected
+			// Re-resolve neighbor, but skip if it would break existing connections
 			const nExits = getCellExits( nCell );
 			const nConn = getConnectivityMask( nx, nz );
-			const connected = nExits & nConn;
-			const connCount = ( connected >> 3 & 1 ) + ( connected >> 2 & 1 )
-				+ ( connected >> 1 & 1 ) + ( connected & 1 );
-			if ( connCount >= 2 ) continue;
+			const nConnected = nExits & nConn;
 
 			const [ newType, newOrient ] = resolveTile( nx, nz );
+			const proposedExits = getCellExits( { type: newType, orient: newOrient } );
+			if ( ( proposedExits & nConnected ) !== nConnected ) continue;
+
 			const finalType = ( nCell.isFinish && newType === 'track-straight' ) ? 'track-finish' : newType;
 
 			if ( finalType !== nCell.type || newOrient !== nCell.orient ) {
