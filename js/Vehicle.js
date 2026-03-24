@@ -8,7 +8,8 @@ const _right = new THREE.Vector3();
 const SPEED_SCALE = 12.5;
 const LINEAR_DAMP = 0.1;
 const JUMP_SPEED = 5.5;
-const GROUNDED_HEIGHT = 0.7;
+const VEHICLE_SPHERE_RADIUS = 1.0;
+const GROUNDED_HEIGHT = 1.2;
 const GROUNDED_VERTICAL_SPEED = 1.5;
 const AIR_CONTROL_FACTOR = 0.35;
 
@@ -29,7 +30,7 @@ export class Vehicle {
 		this.angularSpeed = 0;
 		this.acceleration = 0;
 
-		this.spherePos = new THREE.Vector3( 3.5, 0.5, 5 );
+		this.spherePos = new THREE.Vector3( 3.5, VEHICLE_SPHERE_RADIUS, 5 );
 		this.sphereVel = new THREE.Vector3();
 
 		this.rigidBody = null;
@@ -60,6 +61,7 @@ export class Vehicle {
 	init( model ) {
 
 		const vehicleModel = model.clone();
+		let colliderNode = null;
 
 		this.container.add( vehicleModel );
 
@@ -67,6 +69,8 @@ export class Vehicle {
 		vehicleModel.traverse( ( child ) => {
 
 			const name = child.name.toLowerCase();
+
+			if ( ! colliderNode && name.includes( 'collider' ) ) colliderNode = child;
 
 			if ( name === 'body' ) {
 
@@ -94,6 +98,8 @@ export class Vehicle {
 
 		} );
 
+		if ( colliderNode ) colliderNode.visible = false;
+
 		return this.container;
 
 	}
@@ -113,7 +119,8 @@ export class Vehicle {
 		this.inputX = controlsInput.x;
 		this.inputZ = controlsInput.z;
 
-		const isGrounded = this.spherePos.y <= GROUNDED_HEIGHT && Math.abs( this.sphereVel.y ) <= GROUNDED_VERTICAL_SPEED;
+		const isGrounded = this.spherePos.y <= GROUNDED_HEIGHT &&
+			Math.abs( this.sphereVel.y ) <= GROUNDED_VERTICAL_SPEED;
 		this.isGrounded = isGrounded;
 
 		if ( controlsInput.jump && isGrounded && this.rigidBody ) {
@@ -210,13 +217,13 @@ export class Vehicle {
 
 			if ( this.rigidBody ) {
 
-				rigidBody.setPosition( this.physicsWorld, this.rigidBody, [ 3.5, 0.5, 5 ], false );
+				rigidBody.setPosition( this.physicsWorld, this.rigidBody, [ 3.5, VEHICLE_SPHERE_RADIUS, 5 ], false );
 				rigidBody.setLinearVelocity( this.physicsWorld, this.rigidBody, [ 0, 0, 0 ] );
 				rigidBody.setAngularVelocity( this.physicsWorld, this.rigidBody, [ 0, 0, 0 ] );
 
 			}
 
-			this.spherePos.set( 3.5, 0.5, 5 );
+			this.spherePos.set( 3.5, VEHICLE_SPHERE_RADIUS, 5 );
 			this.sphereVel.set( 0, 0, 0 );
 			this.linearSpeed = 0;
 			this.angularSpeed = 0;
@@ -228,7 +235,7 @@ export class Vehicle {
 
 		this.container.position.set(
 			this.spherePos.x,
-			this.spherePos.y - 0.5,
+			this.spherePos.y - VEHICLE_SPHERE_RADIUS,
 			this.spherePos.z
 		);
 

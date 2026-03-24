@@ -3,6 +3,7 @@ import { rigidBody, box, sphere, MotionType, MotionQuality } from 'crashcat';
 import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
+const VEHICLE_SPHERE_RADIUS = 1.0;
 
 function addDebugBox( group, halfExtents, position, quaternion ) {
 
@@ -122,11 +123,15 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 
 export function createSphereBody( world, spawnPos ) {
 
+	const initialPosition = spawnPos ?
+		[ spawnPos[ 0 ], spawnPos[ 1 ] + VEHICLE_SPHERE_RADIUS - 0.5, spawnPos[ 2 ] ] :
+		[ 3.5, VEHICLE_SPHERE_RADIUS, 5 ];
+
 	const body = rigidBody.create( world, {
-		shape: sphere.create( { radius: 0.5 } ),
+		shape: sphere.create( { radius: VEHICLE_SPHERE_RADIUS } ),
 		motionType: MotionType.DYNAMIC,
 		objectLayer: world._OL_MOVING,
-		position: spawnPos || [ 3.5, 0.5, 5 ],
+		position: initialPosition,
 		mass: 1000.0,
 		friction: 5.0,
 		restitution: 0.1,

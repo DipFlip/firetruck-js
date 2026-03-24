@@ -31,6 +31,46 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color( 0xadb2ba );
 scene.fog = new THREE.Fog( 0xadb2ba, 30, 55 );
 
+const debugUi = document.createElement( 'label' );
+debugUi.style.position = 'absolute';
+debugUi.style.left = '16px';
+debugUi.style.bottom = '16px';
+debugUi.style.display = 'flex';
+debugUi.style.alignItems = 'center';
+debugUi.style.gap = '8px';
+debugUi.style.padding = '8px 10px';
+debugUi.style.color = '#fff';
+debugUi.style.font = '13px sans-serif';
+debugUi.style.background = 'rgba(0, 0, 0, 0.55)';
+debugUi.style.borderRadius = '6px';
+debugUi.style.zIndex = '10';
+debugUi.style.userSelect = 'none';
+
+const debugSphereToggle = document.createElement( 'input' );
+debugSphereToggle.type = 'checkbox';
+debugUi.appendChild( debugSphereToggle );
+debugUi.appendChild( document.createTextNode( 'Show physics sphere' ) );
+document.body.appendChild( debugUi );
+
+const debugSphere = new THREE.Mesh(
+	new THREE.SphereGeometry( 1.0, 20, 12 ),
+	new THREE.MeshBasicMaterial( {
+		color: 0x00ff88,
+		wireframe: true,
+		transparent: true,
+		opacity: 0.8,
+		depthWrite: false,
+	} )
+);
+debugSphere.visible = false;
+scene.add( debugSphere );
+
+debugSphereToggle.addEventListener( 'change', () => {
+
+	debugSphere.visible = debugSphereToggle.checked;
+
+} );
+
 const dirLight = new THREE.DirectionalLight( 0xffffff, 5 );
 dirLight.position.set( 11.4, 15, -5.3 );
 dirLight.castShadow = true;
@@ -54,7 +94,9 @@ window.addEventListener( 'resize', () => {
 } );
 
 const loader = new GLTFLoader();
+const PLAYER_VEHICLE_MODEL = 'airport_firetruck';
 const modelNames = [
+	PLAYER_VEHICLE_MODEL,
 	'vehicle-truck-yellow', 'vehicle-truck-green', 'vehicle-truck-purple', 'vehicle-truck-red',
 	'track-straight', 'track-corner', 'track-bump', 'track-finish',
 	'decoration-empty', 'decoration-forest', 'decoration-tents',
@@ -171,19 +213,21 @@ async function init() {
 	const sphereBody = createSphereBody( world, spawn ? spawn.position : null );
 
 	const vehicle = new Vehicle();
+	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
 	vehicle.rigidBody = sphereBody;
 	vehicle.physicsWorld = world;
 
 	if ( spawn ) {
 
-		const [ sx, sy, sz ] = spawn.position;
-		vehicle.spherePos.set( sx, sy, sz );
+		const [ sx, , sz ] = spawn.position;
+		const [ , syBody ] = sphereBody.position;
+		vehicle.spherePos.set( sx, syBody, sz );
 		vehicle.prevModelPos.set( sx, 0, sz );
 		vehicle.container.rotation.y = spawn.angle;
 
 	}
 
-	const vehicleGroup = vehicle.init( models[ 'vehicle-truck-yellow' ] );
+	const vehicleGroup = vehicle.init( vehicleModel );
 	scene.add( vehicleGroup );
 
 	dirLight.target = vehicleGroup;
@@ -229,6 +273,7 @@ async function init() {
 		updateWorld( world, contactListener, dt );
 
 		vehicle.update( dt, input );
+		debugSphere.position.copy( vehicle.spherePos );
 
 		dirLight.position.set(
 			vehicle.spherePos.x + 11.4,
