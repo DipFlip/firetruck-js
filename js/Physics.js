@@ -4,6 +4,16 @@ import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
 const VEHICLE_SPHERE_RADIUS = 1.0;
+const _tmpVec3A = new THREE.Vector3();
+const _tmpVec3B = new THREE.Vector3();
+const _tmpVec2A = new THREE.Vector2();
+const _tmpVec2B = new THREE.Vector2();
+const _probeAxes = [
+	new THREE.Vector2(),
+	new THREE.Vector2(),
+	new THREE.Vector2(),
+	new THREE.Vector2(),
+];
 
 function addDebugBox( group, halfExtents, position, quaternion ) {
 
@@ -38,6 +48,7 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 	const INNER_R = WALL_HALF_THICK;
 	const INNER_SEG = 3;
 	const INNER_SEG_HALF_LEN = ( INNER_R * ( Math.PI / 2 ) / INNER_SEG / 2 ) * S;
+	const wallProbeBoxes = [];
 
 	function addArcWall( wcx, wcz, arcStart, radius, numSeg, segHalfLen ) {
 
@@ -60,6 +71,14 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 				quaternion,
 				friction: 0.0,
 				restitution: 0.1,
+			} );
+
+			wallProbeBoxes.push( {
+				centerX: position[ 0 ],
+				centerZ: position[ 2 ],
+				halfX: halfExtents[ 0 ],
+				halfZ: halfExtents[ 2 ],
+				angle: - aMid,
 			} );
 
 			if ( debugGroup ) addDebugBox( debugGroup, halfExtents, position, quaternion );
@@ -102,6 +121,14 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 					restitution: 0.1,
 				} );
 
+				wallProbeBoxes.push( {
+					centerX: position[ 0 ],
+					centerZ: position[ 2 ],
+					halfX: halfExtents[ 0 ],
+					halfZ: halfExtents[ 2 ],
+					angle: rad,
+				} );
+
 				if ( debugGroup ) addDebugBox( debugGroup, halfExtents, position, quaternion );
 
 			}
@@ -118,6 +145,228 @@ export function buildWallColliders( world, debugGroup, customCells ) {
 		}
 
 	}
+
+	return wallProbeBoxes;
+
+}
+
+function findNamedNode( root, matcher ) {
+
+	let matchedNode = null;
+
+	root.traverse( ( child ) => {
+
+		if ( matchedNode ) return;
+		if ( child.name && matcher( child.name.toLowerCase() ) ) matchedNode = child;
+
+	} );
+
+	return matchedNode;
+
+}
+
+function computeNodeBoundsInRootSpace( root, node ) {
+
+	root.updateMatrixWorld( true );
+	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
+	const bounds = new THREE.Box3().makeEmpty();
+	let foundMesh = false;
+
+	node.traverse( ( child ) => {
+
+		if ( ! child.isMesh || ! child.geometry ) return;
+
+		const positionAttr = child.geometry.getAttribute( 'position' );
+		if ( ! positionAttr ) return;
+
+		foundMesh = true;
+		const toLocal = new THREE.Matrix4().multiplyMatrices( toRootSpace, child.matrixWorld );
+
+		for ( let i = 0; i < positionAttr.count; i ++ ) {
+
+			_tmpVec3A.fromBufferAttribute( positionAttr, i ).applyMatrix4( toLocal );
+			bounds.expandByPoint( _tmpVec3A );
+
+		}
+
+	} );
+
+	return foundMesh ? bounds : null;
+
+}
+
+export function createVehicleWallProbe( model ) {
+
+	const colliderNode = findNamedNode( model, ( name ) => name.includes( 'collider' ) );
+	const probeSource = colliderNode || findNamedNode( model, ( name ) => name === 'body' ) || model;
+	const bounds = computeNodeBoundsInRootSpace( model, probeSource );
+
+	if ( ! bounds || bounds.isEmpty() ) {
+
+		return {
+			offsetX: 0,
+			offsetZ: 0,
+			halfX: 1.1,
+			halfZ: 2.0,
+		};
+
+	}
+
+	bounds.getCenter( _tmpVec3A );
+	bounds.getSize( _tmpVec3B );
+
+	return {
+		offsetX: _tmpVec3A.x,
+		offsetZ: _tmpVec3A.z,
+		halfX: Math.max( _tmpVec3B.x * 0.5, 0.25 ),
+		halfZ: Math.max( _tmpVec3B.z * 0.5, 0.25 ),
+	};
+
+}
+
+function projectBoxRadius( halfX, halfZ, axis, boxAxisX, boxAxisZ ) {
+
+	return Math.abs( axis.dot( boxAxisX ) ) * halfX + Math.abs( axis.dot( boxAxisZ ) ) * halfZ;
+
+}
+
+function computeBoxWallPush( probeCenter, probeHalfX, probeHalfZ, probeAngle, wall ) {
+
+	const cosProbe = Math.cos( probeAngle );
+	const sinProbe = Math.sin( probeAngle );
+	const probeAxisX = _probeAxes[ 0 ].set( cosProbe, sinProbe );
+	const probeAxisZ = _probeAxes[ 1 ].set( - sinProbe, cosProbe );
+
+	const cosWall = Math.cos( wall.angle );
+	const sinWall = Math.sin( wall.angle );
+	const wallAxisX = _probeAxes[ 2 ].set( cosWall, sinWall );
+	const wallAxisZ = _probeAxes[ 3 ].set( - sinWall, cosWall );
+
+	const delta = _tmpVec2A.set( probeCenter.x - wall.centerX, probeCenter.y - wall.centerZ );
+	let bestAxis = null;
+	let bestOverlap = Infinity;
+
+	for ( const axis of _probeAxes ) {
+
+		const axisLengthSq = axis.lengthSq();
+		if ( axisLengthSq === 0 ) continue;
+
+		const normalizedAxis = _tmpVec2B.copy( axis ).multiplyScalar( 1 / Math.sqrt( axisLengthSq ) );
+		const probeRadius = projectBoxRadius( probeHalfX, probeHalfZ, normalizedAxis, probeAxisX, probeAxisZ );
+		const wallRadius = projectBoxRadius( wall.halfX, wall.halfZ, normalizedAxis, wallAxisX, wallAxisZ );
+		const distance = Math.abs( delta.dot( normalizedAxis ) );
+		const overlap = probeRadius + wallRadius - distance;
+
+		if ( overlap <= 0 ) return null;
+		if ( overlap < bestOverlap ) {
+
+			bestOverlap = overlap;
+			bestAxis = normalizedAxis.clone();
+
+		}
+
+	}
+
+	if ( ! bestAxis ) return null;
+
+	if ( delta.dot( bestAxis ) < 0 ) bestAxis.negate();
+
+	return bestAxis.multiplyScalar( bestOverlap + 0.001 );
+
+}
+
+export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicleWallProbe ) {
+
+	if ( ! vehicle?.rigidBody || ! wallProbeBoxes?.length || ! vehicleWallProbe ) return false;
+
+	const yaw = vehicle.container.rotation.y;
+	const cosYaw = Math.cos( yaw );
+	const sinYaw = Math.sin( yaw );
+	const probeCenter = new THREE.Vector2(
+		vehicle.spherePos.x + vehicleWallProbe.offsetX * cosYaw + vehicleWallProbe.offsetZ * sinYaw,
+		vehicle.spherePos.z - vehicleWallProbe.offsetX * sinYaw + vehicleWallProbe.offsetZ * cosYaw
+	);
+
+	let corrected = false;
+
+	for ( let iteration = 0; iteration < 4; iteration ++ ) {
+
+		let largestPush = null;
+		let largestPushLengthSq = 0;
+
+		for ( const wall of wallProbeBoxes ) {
+
+			const push = computeBoxWallPush(
+				probeCenter,
+				vehicleWallProbe.halfX,
+				vehicleWallProbe.halfZ,
+				yaw,
+				wall
+			);
+
+			if ( ! push ) continue;
+
+			const pushLengthSq = push.lengthSq();
+			if ( pushLengthSq > largestPushLengthSq ) {
+
+				largestPush = push;
+				largestPushLengthSq = pushLengthSq;
+
+			}
+
+		}
+
+		if ( ! largestPush ) break;
+
+		probeCenter.add( largestPush );
+		vehicle.spherePos.x += largestPush.x;
+		vehicle.spherePos.z += largestPush.y;
+		corrected = true;
+
+	}
+
+	if ( ! corrected ) return false;
+
+	rigidBody.setPosition( world, vehicle.rigidBody, [
+		vehicle.spherePos.x,
+		vehicle.spherePos.y,
+		vehicle.spherePos.z
+	], false );
+
+	const velocity = vehicle.rigidBody.motionProperties.linearVelocity;
+	const correction = _tmpVec2A.set(
+		vehicle.spherePos.x - vehicle.container.position.x,
+		vehicle.spherePos.z - vehicle.container.position.z
+	);
+
+	if ( correction.lengthSq() > 0 ) {
+
+		correction.normalize();
+		const intoWall = velocity[ 0 ] * correction.x + velocity[ 2 ] * correction.y;
+
+		if ( intoWall < 0 ) {
+
+			const nextVelocityX = velocity[ 0 ] - correction.x * intoWall;
+			const nextVelocityZ = velocity[ 2 ] - correction.y * intoWall;
+			rigidBody.setLinearVelocity( world, vehicle.rigidBody, [
+				nextVelocityX,
+				velocity[ 1 ],
+				nextVelocityZ
+			] );
+			vehicle.sphereVel.x = nextVelocityX;
+			vehicle.sphereVel.z = nextVelocityZ;
+
+		}
+
+	}
+
+	vehicle.container.position.set(
+		vehicle.spherePos.x,
+		vehicle.spherePos.y - VEHICLE_SPHERE_RADIUS,
+		vehicle.spherePos.z
+	);
+
+	return true;
 
 }
 

@@ -6,7 +6,7 @@ import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds } from './Track.js';
-import { buildWallColliders, createSphereBody } from './Physics.js';
+import { buildWallColliders, createSphereBody, createVehicleWallProbe, resolveVehicleWallProbe } from './Physics.js';
 import { SmokeTrails } from './Particles.js';
 import { GameAudio } from './Audio.js';
 
@@ -198,7 +198,7 @@ async function init() {
 	world._OL_MOVING = OL_MOVING;
 	world._OL_STATIC = OL_STATIC;
 
-	buildWallColliders( world, null, customCells );
+	const wallProbeBoxes = buildWallColliders( world, null, customCells );
 
 	const roadHalf = groundSize / 2;
 	rigidBody.create( world, {
@@ -214,6 +214,7 @@ async function init() {
 
 	const vehicle = new Vehicle();
 	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
+	const vehicleWallProbe = createVehicleWallProbe( vehicleModel );
 	vehicle.rigidBody = sphereBody;
 	vehicle.physicsWorld = world;
 
@@ -273,6 +274,7 @@ async function init() {
 		updateWorld( world, contactListener, dt );
 
 		vehicle.update( dt, input );
+		resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicleWallProbe );
 		debugSphere.position.copy( vehicle.spherePos );
 
 		dirLight.position.set(
