@@ -5,6 +5,8 @@ export class Controls {
 		this.keys = {};
 		this.x = 0;
 		this.z = 0;
+		this.jump = false;
+		this.prevJumpDown = false;
 
 		// Touch state
 		this.touchSteer = 0;
@@ -150,6 +152,7 @@ export class Controls {
 	update() {
 
 		let x = 0, z = 0;
+		let jumpDown = false;
 
 		// Keyboard
 
@@ -157,6 +160,7 @@ export class Controls {
 		if ( this.keys[ 'KeyD' ] || this.keys[ 'ArrowRight' ] ) x += 1;
 		if ( this.keys[ 'KeyW' ] || this.keys[ 'ArrowUp' ] ) z += 1;
 		if ( this.keys[ 'KeyS' ] || this.keys[ 'ArrowDown' ] ) z -= 1;
+		if ( this.keys[ 'Space' ] ) jumpDown = true;
 
 		// Gamepad
 
@@ -171,8 +175,10 @@ export class Controls {
 
 			const rt = gp.buttons[ 7 ] ? gp.buttons[ 7 ].value : 0;
 			const lt = gp.buttons[ 6 ] ? gp.buttons[ 6 ].value : 0;
+			const southButton = gp.buttons[ 0 ] ? gp.buttons[ 0 ].pressed : false;
 
 			if ( rt > 0.1 || lt > 0.1 ) z = rt - lt;
+			if ( southButton ) jumpDown = true;
 
 			break;
 
@@ -186,8 +192,10 @@ export class Controls {
 
 		this.x = x;
 		this.z = z;
+		this.jump = jumpDown && ! this.prevJumpDown;
+		this.prevJumpDown = jumpDown;
 
-		return { x, z };
+		return { x, z, jump: this.jump };
 
 	}
 
