@@ -1016,7 +1016,9 @@
 			}
 
 			lastDrawCell = null;
-			handleDraw( e.clientX, e.clientY );
+
+			// On touch, defer draw until pointermove confirms single-finger gesture
+			if ( e.pointerType !== 'touch' ) handleDraw( e.clientX, e.clientY );
 
 		} else if ( e.button === 2 ) {
 
@@ -1097,6 +1099,13 @@
 		pointers.delete( e.pointerId );
 
 		if ( pointers.size === 0 ) {
+
+			// Touch tap: if we deferred draw and never moved, draw now
+			if ( ( isDrawing || isErasing ) && lastDrawCell === null && ! isPanning ) {
+
+				handleDraw( e.clientX, e.clientY );
+
+			}
 
 			isPanning = false;
 			isDrawing = false;
