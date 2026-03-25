@@ -6,7 +6,7 @@ import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds } from './Track.js';
-import { buildWallColliders, createSphereBody, createVehicleWallProbe, resolveVehicleWallProbe } from './Physics.js';
+import { buildWallColliders, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
 import { SmokeTrails } from './Particles.js';
 import { GameAudio } from './Audio.js';
 
@@ -30,6 +30,12 @@ document.body.appendChild( renderer.domElement );
 const scene = new THREE.Scene();
 scene.background = new THREE.Color( 0xadb2ba );
 scene.fog = new THREE.Fog( 0xadb2ba, 30, 55 );
+
+const VEHICLE_SPHERE_RADIUS = 0.5;
+const GROUP_GROUND = 1 << 0;
+const GROUP_WALL = 1 << 1;
+const GROUP_VEHICLE_SPHERE = 1 << 2;
+const GROUP_VEHICLE_COLLIDER = 1 << 3;
 
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
@@ -68,17 +74,17 @@ const debugProbeOffset = new THREE.Vector3();
 const debugWallGroup = new THREE.Group();
 debugWallGroup.visible = false;
 scene.add( debugWallGroup );
-const debugProbeRotation = new THREE.Quaternion().setFromEuler( new THREE.Euler( Math.PI / 2, 0, 0 ) );
-
+const vehicleCollisionRotation = new THREE.Quaternion().setFromEuler( new THREE.Euler( Math.PI / 2, 0, 0 ) );
+const debugProbeMaterial = new THREE.MeshBasicMaterial( {
+	color: 0xffaa00,
+	wireframe: true,
+	transparent: true,
+	opacity: 0.8,
+	depthWrite: false,
+} );
 const debugProbeBox = new THREE.Mesh(
 	new THREE.CapsuleGeometry( 0.5, 1, 4, 8 ),
-	new THREE.MeshBasicMaterial( {
-		color: 0xffaa00,
-		wireframe: true,
-		transparent: true,
-		opacity: 0.8,
-		depthWrite: false,
-	} )
+	debugProbeMaterial
 );
 debugProbeBox.visible = false;
 scene.add( debugProbeBox );
@@ -218,7 +224,7 @@ async function init() {
 	world._OL_MOVING = OL_MOVING;
 	world._OL_STATIC = OL_STATIC;
 
-	const wallProbeBoxes = buildWallColliders( world, null, customCells );
+	const wallProbeBoxes = buildWallColliders( world, null, customCells, GROUP_WALL, GROUP_VEHICLE_COLLIDER );
 	debugWallGroup.clear();
 
 	for ( const wall of wallProbeBoxes ) {
@@ -247,20 +253,12 @@ async function init() {
 		position: [ bounds.centerX, - 0.125, bounds.centerZ ],
 		friction: 5.0,
 		restitution: 0.0,
+		collisionGroups: GROUP_GROUND,
+		collisionMask: GROUP_VEHICLE_SPHERE,
 	} );
 
-	const sphereBody = createSphereBody( world, spawn ? spawn.position : null );
-
 	const vehicle = new Vehicle();
-	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
-	const vehicleWallProbe = createVehicleWallProbe( vehicleModel );
-	debugProbeBox.geometry.dispose();
-	debugProbeBox.geometry = new THREE.CapsuleGeometry(
-		vehicleWallProbe.radius,
-		Math.max( vehicleWallProbe.halfLength * 2 - vehicleWallProbe.radius * 2, 0 ),
-		4,
-		8
-	);
+	const sphereBody = createSphereBody( world, spawn ? spawn.position : null, GROUP_VEHICLE_SPHERE, GROUP_GROUND );
 	vehicle.rigidBody = sphereBody;
 	vehicle.physicsWorld = world;
 
@@ -273,6 +271,36 @@ async function init() {
 		vehicle.container.rotation.y = spawn.angle;
 
 	}
+
+	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
+	const vehicleCollision = createVehicleCollisionProfile( vehicleModel );
+	const collisionBodyQuat = new THREE.Quaternion().copy( vehicle.container.quaternion ).multiply( vehicleCollisionRotation );
+	debugProbeBox.geometry.dispose();
+	debugProbeBox.geometry = new THREE.CapsuleGeometry(
+		vehicleCollision.radius,
+		vehicleCollision.halfHeightOfCylinder * 2,
+		4,
+		8
+	);
+	debugProbeOffset.set(
+		vehicleCollision.offsetX,
+		vehicleCollision.offsetY - VEHICLE_SPHERE_RADIUS,
+		vehicleCollision.offsetZ
+	).applyQuaternion( vehicle.container.quaternion );
+	const collisionBody = createVehicleCollisionBody(
+		world,
+		vehicleCollision,
+		[
+			vehicle.spherePos.x + debugProbeOffset.x,
+			vehicle.spherePos.y + debugProbeOffset.y,
+			vehicle.spherePos.z + debugProbeOffset.z
+		],
+		[ collisionBodyQuat.x, collisionBodyQuat.y, collisionBodyQuat.z, collisionBodyQuat.w ],
+		GROUP_VEHICLE_COLLIDER,
+		GROUP_WALL
+	);
+	createVehicleCollisionConstraint( world, sphereBody, collisionBody, vehicleCollision );
+	vehicle.collisionBody = collisionBody;
 
 	const vehicleGroup = vehicle.init( vehicleModel );
 	scene.add( vehicleGroup );
@@ -288,14 +316,14 @@ async function init() {
 
 	const audio = new GameAudio();
 	audio.init( cam.camera );
-	let probeImpactCooldown = 0;
 
 	const _forward = new THREE.Vector3();
+	const _collisionQuat = new THREE.Quaternion();
 
 	const contactListener = {
 		onContactAdded( bodyA, bodyB ) {
 
-			if ( bodyA !== sphereBody && bodyB !== sphereBody ) return;
+			if ( bodyA !== sphereBody && bodyB !== sphereBody && bodyA !== collisionBody && bodyB !== collisionBody ) return;
 
 			_forward.set( 0, 0, 1 ).applyQuaternion( vehicle.container.quaternion );
 			_forward.y = 0;
@@ -315,18 +343,34 @@ async function init() {
 
 		timer.update();
 		const dt = Math.min( timer.getDelta(), 1 / 30 );
-		probeImpactCooldown = Math.max( 0, probeImpactCooldown - dt );
 
 		const input = controls.update();
 
 		updateWorld( world, contactListener, dt );
 
 		vehicle.update( dt, input );
-		const probeImpactVelocity = resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicleWallProbe );
-		if ( probeImpactVelocity > 0.4 && probeImpactCooldown === 0 ) {
+		_collisionQuat.copy( vehicle.container.quaternion ).multiply( vehicleCollisionRotation );
+		rigidBody.setQuaternion( world, collisionBody, [
+			_collisionQuat.x,
+			_collisionQuat.y,
+			_collisionQuat.z,
+			_collisionQuat.w
+		], false );
+		rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
+		if ( vehicle.justReset ) {
 
-			audio.playImpact( probeImpactVelocity );
-			probeImpactCooldown = 0.08;
+			debugProbeOffset.set(
+				vehicleCollision.offsetX,
+				vehicleCollision.offsetY - VEHICLE_SPHERE_RADIUS,
+				vehicleCollision.offsetZ
+			).applyQuaternion( vehicle.container.quaternion );
+			rigidBody.setPosition( world, collisionBody, [
+				vehicle.spherePos.x + debugProbeOffset.x,
+				vehicle.spherePos.y + debugProbeOffset.y,
+				vehicle.spherePos.z + debugProbeOffset.z
+			], false );
+			rigidBody.setLinearVelocity( world, collisionBody, [ 0, 0, 0 ] );
+			rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
 
 		}
 		debugSphere.position.copy( vehicle.spherePos );
@@ -336,13 +380,17 @@ async function init() {
 			sphereBody.quaternion[ 2 ],
 			sphereBody.quaternion[ 3 ]
 		);
-		debugProbeOffset.set(
-			vehicleWallProbe.offsetX,
-			vehicleWallProbe.offsetY,
-			vehicleWallProbe.offsetZ
-		).applyQuaternion( vehicle.container.quaternion );
-		debugProbeBox.position.copy( vehicle.container.position ).add( debugProbeOffset );
-		debugProbeBox.quaternion.copy( vehicle.container.quaternion ).multiply( debugProbeRotation );
+		debugProbeBox.position.set(
+			collisionBody.position[ 0 ],
+			collisionBody.position[ 1 ],
+			collisionBody.position[ 2 ]
+		);
+		debugProbeBox.quaternion.set(
+			collisionBody.quaternion[ 0 ],
+			collisionBody.quaternion[ 1 ],
+			collisionBody.quaternion[ 2 ],
+			collisionBody.quaternion[ 3 ]
+		);
 
 		dirLight.position.set(
 			vehicle.spherePos.x + 11.4,

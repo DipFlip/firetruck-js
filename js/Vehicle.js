@@ -34,6 +34,7 @@ export class Vehicle {
 		this.sphereVel = new THREE.Vector3();
 
 		this.rigidBody = null;
+		this.collisionBody = null;
 		this.physicsWorld = null;
 
 		this.modelVelocity = new THREE.Vector3();
@@ -55,6 +56,7 @@ export class Vehicle {
 
 		this.driftIntensity = 0;
 		this.isGrounded = false;
+		this.justReset = false;
 
 	}
 
@@ -105,6 +107,8 @@ export class Vehicle {
 	}
 
 	update( dt, controlsInput ) {
+
+		this.justReset = false;
 
 		if ( this.rigidBody ) {
 
@@ -230,6 +234,7 @@ export class Vehicle {
 			this.acceleration = 0;
 			this.container.rotation.set( 0, 0, 0 );
 			this.container.quaternion.identity();
+			this.justReset = true;
 
 		}
 
