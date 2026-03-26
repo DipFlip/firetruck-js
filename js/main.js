@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, enableCollision, registerAll, updateWorld, rigidBody, box, MotionType } from 'crashcat';
+import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, enableCollision, registerAll, updateWorld, rigidBody, box, sphere, castShape, createClosestCastShapeCollector, createDefaultCastShapeSettings, CastShapeStatus, filter, MotionType } from 'crashcat';
 import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds } from './Track.js';
-import { buildWallColliders, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
+import { buildWallColliders, buildRampColliders, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
 import { SmokeTrails } from './Particles.js';
 import { GameAudio } from './Audio.js';
 
@@ -36,6 +36,11 @@ const GROUP_GROUND = 1 << 0;
 const GROUP_WALL = 1 << 1;
 const GROUP_VEHICLE_SPHERE = 1 << 2;
 const GROUP_VEHICLE_COLLIDER = 1 << 3;
+const GROUND_PROBE_START_HEIGHT = 2.5;
+const GROUND_PROBE_RAY_FAR = 4.5;
+const GROUND_CONTACT_DISTANCE = 0.75;
+const GROUND_PROBE_RADIUS = 0.05;
+const GROUND_SURFACE_OVERLAP_TOLERANCE = 0.12;
 
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
@@ -55,7 +60,7 @@ debugUi.style.userSelect = 'none';
 const debugSphereToggle = document.createElement( 'input' );
 debugSphereToggle.type = 'checkbox';
 debugUi.appendChild( debugSphereToggle );
-debugUi.appendChild( document.createTextNode( 'Show physics sphere' ) );
+debugUi.appendChild( document.createTextNode( 'Debug' ) );
 document.body.appendChild( debugUi );
 
 const debugSphere = new THREE.Mesh(
@@ -75,6 +80,17 @@ const debugWallGroup = new THREE.Group();
 debugWallGroup.visible = false;
 scene.add( debugWallGroup );
 const vehicleCollisionRotation = new THREE.Quaternion().setFromEuler( new THREE.Euler( Math.PI / 2, 0, 0 ) );
+const groundProbeBase = new THREE.Vector3();
+const groundProbeOrigin = new THREE.Vector3();
+const groundProbeWorld = new THREE.Vector3();
+const groundProbeNormal = new THREE.Vector3();
+const groundProbeForward = new THREE.Vector3();
+const groundProbeRight = new THREE.Vector3();
+const groundHitNormal = new THREE.Vector3();
+const groundProbeOriginArray = [ 0, 0, 0 ];
+const groundProbeQuatArray = [ 0, 0, 0, 1 ];
+const groundProbeScaleArray = [ 1, 1, 1 ];
+const groundProbeDisplacementArray = [ 0, - GROUND_PROBE_RAY_FAR, 0 ];
 const debugProbeMaterial = new THREE.MeshBasicMaterial( {
 	color: 0xffaa00,
 	wireframe: true,
@@ -88,12 +104,21 @@ const debugProbeBox = new THREE.Mesh(
 );
 debugProbeBox.visible = false;
 scene.add( debugProbeBox );
+let playerVehicleGroup = null;
+const rampVisualPieces = [];
 
 debugSphereToggle.addEventListener( 'change', () => {
 
 	debugSphere.visible = debugSphereToggle.checked;
 	debugProbeBox.visible = debugSphereToggle.checked;
 	debugWallGroup.visible = debugSphereToggle.checked;
+	if ( playerVehicleGroup ) playerVehicleGroup.visible = ! debugSphereToggle.checked;
+
+	for ( const rampPiece of rampVisualPieces ) {
+
+		rampPiece.visible = ! debugSphereToggle.checked;
+
+	}
 
 } );
 
@@ -124,7 +149,7 @@ const PLAYER_VEHICLE_MODEL = 'airport_firetruck';
 const modelNames = [
 	PLAYER_VEHICLE_MODEL,
 	'vehicle-truck-yellow', 'vehicle-truck-green', 'vehicle-truck-purple', 'vehicle-truck-red',
-	'track-straight', 'track-corner', 'track-bump', 'track-finish',
+	'track-straight', 'track-corner', 'track-bump', 'track-finish', 'ramp',
 	'decoration-empty', 'decoration-forest', 'decoration-tents',
 ];
 
@@ -206,7 +231,14 @@ async function init() {
 	scene.fog.near = groundSize * 0.4;
 	scene.fog.far = groundSize * 0.8;
 
-	buildTrack( scene, models, customCells );
+	const driveSurfaceRoot = buildTrack( scene, models, customCells );
+	rampVisualPieces.length = 0;
+
+	for ( const piece of driveSurfaceRoot.children ) {
+
+		if ( piece.userData.trackKey === 'ramp' ) rampVisualPieces.push( piece );
+
+	}
 
 
 	const worldSettings = createWorldSettings();
@@ -224,8 +256,15 @@ async function init() {
 	world._OL_MOVING = OL_MOVING;
 	world._OL_STATIC = OL_STATIC;
 
-	const wallProbeBoxes = buildWallColliders( world, null, customCells, GROUP_WALL, GROUP_VEHICLE_COLLIDER );
 	debugWallGroup.clear();
+	const wallProbeBoxes = buildWallColliders( world, null, customCells, GROUP_WALL, GROUP_VEHICLE_COLLIDER );
+	buildRampColliders( world, customCells, models.ramp, GROUP_GROUND, GROUP_VEHICLE_SPHERE, debugWallGroup );
+	const groundProbeShape = sphere.create( { radius: GROUND_PROBE_RADIUS } );
+	const groundProbeCollector = createClosestCastShapeCollector();
+	const groundProbeSettings = createDefaultCastShapeSettings();
+	const groundProbeFilter = filter.forWorld( world );
+	filter.disableAllLayers( groundProbeFilter, world.settings.layers );
+	filter.enableBroadphaseLayer( groundProbeFilter, world.settings.layers, BPL_STATIC );
 
 	for ( const wall of wallProbeBoxes ) {
 
@@ -269,6 +308,7 @@ async function init() {
 		vehicle.spherePos.set( sx, syBody, sz );
 		vehicle.prevModelPos.set( sx, 0, sz );
 		vehicle.container.rotation.y = spawn.angle;
+		vehicle.heading = spawn.angle;
 
 	}
 
@@ -302,10 +342,11 @@ async function init() {
 	createVehicleCollisionConstraint( world, sphereBody, collisionBody, vehicleCollision );
 	vehicle.collisionBody = collisionBody;
 
-	const vehicleGroup = vehicle.init( vehicleModel );
-	scene.add( vehicleGroup );
+	playerVehicleGroup = vehicle.init( vehicleModel );
+	playerVehicleGroup.visible = ! debugSphereToggle.checked;
+	scene.add( playerVehicleGroup );
 
-	dirLight.target = vehicleGroup;
+	dirLight.target = playerVehicleGroup;
 
 	const cam = new Camera( renderer );
 	cam.targetPosition.copy( vehicle.spherePos );
@@ -319,6 +360,81 @@ async function init() {
 
 	const _forward = new THREE.Vector3();
 	const _collisionQuat = new THREE.Quaternion();
+
+	function sampleGroundState() {
+
+		const heading = vehicle.heading;
+		const halfWidth = Math.max( vehicleCollision.radius * 0.6, 0.28 );
+		const halfLength = vehicleCollision.halfHeightOfCylinder + vehicleCollision.radius * 0.5;
+		const probePoints = [
+			[ 0, 0 ],
+			[ halfWidth, halfLength ],
+			[ - halfWidth, halfLength ],
+			[ halfWidth, - halfLength ],
+			[ - halfWidth, - halfLength ],
+		];
+
+		groundProbeBase.set( sphereBody.position[ 0 ], sphereBody.position[ 1 ], sphereBody.position[ 2 ] );
+		groundProbeForward.set( Math.sin( heading ), 0, Math.cos( heading ) );
+		groundProbeRight.set( Math.cos( heading ), 0, - Math.sin( heading ) );
+		groundProbeNormal.set( 0, 0, 0 );
+		let hitCount = 0;
+		let closestDistance = Infinity;
+
+		for ( const [ offsetX, offsetZ ] of probePoints ) {
+
+			groundProbeWorld.copy( groundProbeBase )
+				.addScaledVector( groundProbeRight, offsetX )
+				.addScaledVector( groundProbeForward, offsetZ );
+			groundProbeOrigin.copy( groundProbeWorld );
+			groundProbeOrigin.y += GROUND_PROBE_START_HEIGHT;
+
+			groundProbeOriginArray[ 0 ] = groundProbeOrigin.x;
+			groundProbeOriginArray[ 1 ] = groundProbeOrigin.y;
+			groundProbeOriginArray[ 2 ] = groundProbeOrigin.z;
+			groundProbeCollector.reset();
+			castShape(
+				world,
+				groundProbeCollector,
+				groundProbeSettings,
+				groundProbeShape,
+				groundProbeOriginArray,
+				groundProbeQuatArray,
+				groundProbeScaleArray,
+				groundProbeDisplacementArray,
+				groundProbeFilter
+			);
+
+			const hit = groundProbeCollector.hit;
+			if ( hit.status !== CastShapeStatus.COLLIDING ) continue;
+
+			const supportY = hit.pointB[ 1 ];
+			const distanceToSurface = groundProbeBase.y - supportY;
+			if ( distanceToSurface < - GROUND_SURFACE_OVERLAP_TOLERANCE ) continue;
+
+			closestDistance = Math.min( closestDistance, Math.max( distanceToSurface, 0 ) );
+
+			if ( distanceToSurface > GROUND_CONTACT_DISTANCE ) continue;
+
+			groundProbeNormal.add( groundHitNormal.fromArray( hit.normal ).normalize() );
+			hitCount ++;
+
+		}
+
+		if ( hitCount === 0 ) {
+
+			return { isGrounded: false, normal: null };
+
+		}
+
+		groundProbeNormal.normalize();
+
+		return {
+			isGrounded: closestDistance <= GROUND_CONTACT_DISTANCE,
+			normal: groundProbeNormal.clone(),
+		};
+
+	}
 
 	const contactListener = {
 		onContactAdded( bodyA, bodyB ) {
@@ -348,7 +464,7 @@ async function init() {
 
 		updateWorld( world, contactListener, dt );
 
-		vehicle.update( dt, input );
+		vehicle.update( dt, input, sampleGroundState() );
 		_collisionQuat.copy( vehicle.container.quaternion ).multiply( vehicleCollisionRotation );
 		rigidBody.setQuaternion( world, collisionBody, [
 			_collisionQuat.x,

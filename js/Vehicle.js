@@ -4,12 +4,13 @@ import { rigidBody } from 'crashcat';
 const _tmpVec = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
+const _worldUp = new THREE.Vector3( 0, 1, 0 );
+const _yawQuat = new THREE.Quaternion();
 
 const SPEED_SCALE = 12.5;
 const LINEAR_DAMP = 0.1;
 const JUMP_SPEED = 5.5;
 const VEHICLE_SPHERE_RADIUS = 0.5;
-const GROUNDED_HEIGHT = 0.7;
 const GROUNDED_VERTICAL_SPEED = 1.5;
 const AIR_CONTROL_FACTOR = 0.35;
 
@@ -29,6 +30,7 @@ export class Vehicle {
 		this.linearSpeed = 0;
 		this.angularSpeed = 0;
 		this.acceleration = 0;
+		this.heading = 0;
 
 		this.spherePos = new THREE.Vector3( 3.5, VEHICLE_SPHERE_RADIUS, 5 );
 		this.sphereVel = new THREE.Vector3();
@@ -106,7 +108,7 @@ export class Vehicle {
 
 	}
 
-	update( dt, controlsInput ) {
+	update( dt, controlsInput, groundState = null ) {
 
 		this.justReset = false;
 
@@ -123,7 +125,17 @@ export class Vehicle {
 		this.inputX = controlsInput.x;
 		this.inputZ = controlsInput.z;
 
-		const isGrounded = this.spherePos.y <= GROUNDED_HEIGHT &&
+		if ( groundState?.normal ) {
+
+			this.normal.copy( groundState.normal );
+
+		} else {
+
+			this.normal.copy( _worldUp );
+
+		}
+
+		const isGrounded = !! groundState?.isGrounded &&
 			Math.abs( this.sphereVel.y ) <= GROUNDED_VERTICAL_SPEED;
 		this.isGrounded = isGrounded;
 
@@ -147,24 +159,18 @@ export class Vehicle {
 		const targetAngular = - this.inputX * steeringGrip * 4 * direction;
 		this.angularSpeed = THREE.MathUtils.lerp( this.angularSpeed, targetAngular, dt * 4 );
 
-		this.container.rotateY( this.angularSpeed * dt );
+		this.heading += this.angularSpeed * dt;
+
+		const targetUp = isGrounded ? this.normal : _worldUp;
+		_yawQuat.setFromAxisAngle( _worldUp, this.heading );
+		const targetQuat = this.alignWithY( _yawQuat, targetUp );
+		this.container.quaternion.slerp( targetQuat, THREE.MathUtils.clamp( dt * ( isGrounded ? 10 : 4 ), 0, 1 ) );
 
 		if ( isGrounded ) {
 
 			if ( ! this.colliding ) {
 
 				if ( this.bodyNode ) this.bodyNode.position.set( 0, 0.1, 0 );
-
-			}
-
-			this.normal.set( 0, 1, 0 );
-
-			_tmpVec.set( 0, 1, 0 ).applyQuaternion( this.container.quaternion );
-
-			if ( this.normal.dot( _tmpVec ) > 0.5 ) {
-
-				const targetQuat = this.alignWithY( this.container.quaternion, this.normal );
-				this.container.quaternion.slerp( targetQuat, 0.2 );
 
 			}
 
@@ -192,13 +198,8 @@ export class Vehicle {
 
 		if ( this.rigidBody ) {
 
-			_forward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion );
-			_forward.y = 0;
-			_forward.normalize();
-
-			_right.set( 1, 0, 0 ).applyQuaternion( this.container.quaternion );
-			_right.y = 0;
-			_right.normalize();
+			_forward.set( Math.sin( this.heading ), 0, Math.cos( this.heading ) );
+			_right.set( Math.cos( this.heading ), 0, - Math.sin( this.heading ) );
 
 			const angvel = this.rigidBody.motionProperties.angularVelocity;
 			const drive = this.linearSpeed * 100 * dt;
@@ -232,6 +233,7 @@ export class Vehicle {
 			this.linearSpeed = 0;
 			this.angularSpeed = 0;
 			this.acceleration = 0;
+			this.heading = 0;
 			this.container.rotation.set( 0, 0, 0 );
 			this.container.quaternion.identity();
 			this.justReset = true;
@@ -262,7 +264,16 @@ export class Vehicle {
 	alignWithY( quaternion, newY ) {
 
 		const zAxis = new THREE.Vector3( 0, 0, 1 ).applyQuaternion( quaternion );
-		const xAxis = _tmpVec.crossVectors( zAxis, newY ).negate().normalize();
+		const projectedZ = zAxis.projectOnPlane( newY );
+
+		if ( projectedZ.lengthSq() < 1e-6 ) {
+
+			projectedZ.set( 0, 0, 1 ).projectOnPlane( newY );
+
+		}
+
+		projectedZ.normalize();
+		const xAxis = _tmpVec.crossVectors( newY, projectedZ ).normalize();
 		const newZ = new THREE.Vector3().crossVectors( xAxis, newY ).normalize();
 
 		const m = new THREE.Matrix4().makeBasis( xAxis, newY, newZ );

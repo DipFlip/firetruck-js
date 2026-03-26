@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { rigidBody, box, sphere, capsule, pointConstraint, ConstraintSpace, MotionType, MotionQuality, dof } from 'crashcat';
+import { rigidBody, box, sphere, capsule, convexHull, pointConstraint, ConstraintSpace, MotionType, MotionQuality, dof } from 'crashcat';
 import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
@@ -8,6 +8,7 @@ const VEHICLE_COLLISION_ALIGNMENT_INV = new THREE.Quaternion().setFromEuler( new
 const _tmpVec3A = new THREE.Vector3();
 const _tmpVec3B = new THREE.Vector3();
 const _tmpVec3C = new THREE.Vector3();
+const _tmpQuatA = new THREE.Quaternion();
 const _tmpVec2A = new THREE.Vector2();
 const _tmpVec2B = new THREE.Vector2();
 const _probeCenter2D = new THREE.Vector2();
@@ -19,6 +20,8 @@ const MIN_BUMPER_HALF_HEIGHT = 0.18;
 const MIN_BUMPER_BOTTOM = VEHICLE_SPHERE_RADIUS * 0.9;
 const CAPSULE_SAMPLE_OFFSETS = [ - 1, - 0.5, 0, 0.5, 1 ];
 const SPHERE_SAMPLE_OFFSETS = [ 0 ];
+let _rampShape = null;
+let _rampDebugGeometry = null;
 
 function addDebugBox( group, halfExtents, position, quaternion ) {
 
@@ -109,7 +112,7 @@ export function buildWallColliders( world, debugGroup, customCells, collisionGro
 		const rad = deg * Math.PI / 180;
 		const cr = Math.cos( rad ), sr = Math.sin( rad );
 
-		if ( key === 'track-straight' || key === 'track-finish' ) {
+		if ( key === 'track-straight' || key === 'track-finish' || key === 'track-ramp' ) {
 
 			for ( const side of [ - 1, 1 ] ) {
 
@@ -160,6 +163,154 @@ export function buildWallColliders( world, debugGroup, customCells, collisionGro
 	}
 
 	return wallProbeBoxes;
+
+}
+
+function collectNodeVerticesInRootSpace( root, node ) {
+
+	root.updateMatrixWorld( true );
+	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
+	const positions = [];
+
+	node.traverse( ( child ) => {
+
+		if ( ! child.isMesh || ! child.geometry ) return;
+
+		const positionAttr = child.geometry.getAttribute( 'position' );
+		if ( ! positionAttr ) return;
+
+		const toLocal = new THREE.Matrix4().multiplyMatrices( toRootSpace, child.matrixWorld );
+
+		for ( let i = 0; i < positionAttr.count; i ++ ) {
+
+			_tmpVec3A.fromBufferAttribute( positionAttr, i ).applyMatrix4( toLocal );
+			positions.push(
+				_tmpVec3A.x * GRID_SCALE,
+				_tmpVec3A.y * GRID_SCALE,
+				_tmpVec3A.z * GRID_SCALE
+			);
+
+		}
+
+	} );
+
+	return positions;
+
+}
+
+function getRampShape( rampModel ) {
+
+	if ( _rampShape ) return _rampShape;
+	if ( ! rampModel ) return null;
+
+	const colliderNode = findNamedNode( rampModel, ( name ) => name.includes( 'collider' ) );
+	const shapeSource = colliderNode || rampModel;
+	const positions = collectNodeVerticesInRootSpace( rampModel, shapeSource );
+
+	if ( positions.length < 12 ) return null;
+
+	_rampShape = convexHull.create( { positions } );
+	return _rampShape;
+
+}
+
+function getConvexHullDebugGeometry( shape ) {
+
+	if ( _rampDebugGeometry ) return _rampDebugGeometry;
+
+	const positions = [];
+
+	for ( const face of shape.faces ) {
+
+		if ( face.numVertices < 3 ) continue;
+
+		const firstPoint = shape.points[ shape.vertexIndices[ face.firstVertex ] ].position;
+
+		for ( let i = 1; i < face.numVertices - 1; i ++ ) {
+
+			const pointB = shape.points[ shape.vertexIndices[ face.firstVertex + i ] ].position;
+			const pointC = shape.points[ shape.vertexIndices[ face.firstVertex + i + 1 ] ].position;
+			positions.push(
+				firstPoint[ 0 ], firstPoint[ 1 ], firstPoint[ 2 ],
+				pointB[ 0 ], pointB[ 1 ], pointB[ 2 ],
+				pointC[ 0 ], pointC[ 1 ], pointC[ 2 ]
+			);
+
+		}
+
+	}
+
+	const geometry = new THREE.BufferGeometry();
+	geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( positions, 3 ) );
+	_rampDebugGeometry = geometry;
+	return geometry;
+
+}
+
+function addDebugConvexHull( group, shape, position, quaternion ) {
+
+	const mesh = new THREE.Mesh( getConvexHullDebugGeometry( shape ), _debugMat );
+	mesh.position.set( position[ 0 ], position[ 1 ], position[ 2 ] );
+	mesh.quaternion.set( quaternion[ 0 ], quaternion[ 1 ], quaternion[ 2 ], quaternion[ 3 ] );
+	group.add( mesh );
+
+}
+
+function getRampShapeWorldPosition( shape, baseX, baseY, baseZ, rad ) {
+
+	_tmpQuatA.setFromAxisAngle( THREE.Object3D.DEFAULT_UP, rad );
+	_tmpVec3A.fromArray( shape.centerOfMass ).applyQuaternion( _tmpQuatA );
+	return _tmpVec3B.set(
+		baseX + _tmpVec3A.x,
+		baseY + _tmpVec3A.y,
+		baseZ + _tmpVec3A.z
+	);
+
+}
+
+export function buildRampColliders( world, customCells, rampModel, collisionGroups, collisionMask, debugGroup = null ) {
+
+	const cells = customCells || TRACK_CELLS;
+	const rampY = 0.5 * GRID_SCALE - 0.5;
+	const shape = getRampShape( rampModel );
+	if ( ! shape ) return;
+
+	for ( const [ gx, gz, key, orient ] of cells ) {
+
+		if ( key !== 'track-ramp' ) continue;
+
+		const deg = ORIENT_DEG[ orient ] ?? 0;
+		const rad = deg * Math.PI / 180;
+		const baseX = ( gx + 0.5 ) * CELL_RAW * GRID_SCALE;
+		const baseZ = ( gz + 0.5 ) * CELL_RAW * GRID_SCALE;
+		const rampPosition = getRampShapeWorldPosition( shape, baseX, rampY, baseZ, rad );
+		rigidBody.create( world, {
+			shape,
+			motionType: MotionType.STATIC,
+			objectLayer: world._OL_STATIC,
+			position: [
+				rampPosition.x,
+				rampPosition.y,
+				rampPosition.z
+			],
+			quaternion: [ 0, Math.sin( rad / 2 ), 0, Math.cos( rad / 2 ) ],
+			friction: 5.0,
+			restitution: 0.0,
+			collisionGroups,
+			collisionMask,
+		} );
+
+		if ( debugGroup ) {
+
+			addDebugConvexHull( debugGroup, shape, [
+				rampPosition.x,
+				rampPosition.y,
+				rampPosition.z
+			], [ 0, Math.sin( rad / 2 ), 0, Math.cos( rad / 2 ) ] );
+
+		}
+
+	}
 
 }
 

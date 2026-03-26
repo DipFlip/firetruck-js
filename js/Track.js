@@ -19,7 +19,7 @@ export const TRACK_CELLS = [
 	[ -2,  0, 'track-straight', 10 ],
 	[  0,  0, 'track-finish',    0 ],
 	[ -2,  1, 'track-straight', 10 ],
-	[  0,  1, 'track-straight',  0 ],
+	[  0,  1, 'track-ramp',      0 ],
 	[ -2,  2, 'track-corner',   10 ],
 	[ -1,  2, 'track-straight', 16 ],
 	[  0,  2, 'track-corner',   22 ],
@@ -125,6 +125,18 @@ export function buildTrack( scene, models, customCells ) {
 	const cells = customCells || TRACK_CELLS;
 
 	for ( const [ gx, gz, key, orient ] of cells ) {
+
+		if ( key === 'track-ramp' ) {
+
+			const basePiece = placePiece( models, 'track-straight', gx, gz, orient );
+			if ( basePiece ) trackPieceGroup.add( basePiece );
+
+			const rampPiece = placePiece( models, 'ramp', gx, gz, orient );
+			if ( rampPiece ) trackPieceGroup.add( rampPiece );
+
+			continue;
+
+		}
 
 		const piece = placePiece( models, key, gx, gz, orient );
 		if ( piece ) trackPieceGroup.add( piece );
@@ -335,7 +347,7 @@ export function buildTrack( scene, models, customCells ) {
 
 	}
 
-	return;
+	return trackPieceGroup;
 
 }
 
@@ -345,6 +357,7 @@ export function placePiece( models, key, gx, gz, orient ) {
 	if ( ! src ) return null;
 
 	const piece = src.clone();
+	piece.userData.trackKey = key;
 	piece.position.set( ( gx + 0.5 ) * CELL_RAW, 0.5, ( gz + 0.5 ) * CELL_RAW );
 
 	const deg = ORIENT_DEG[ orient ] || 0;
