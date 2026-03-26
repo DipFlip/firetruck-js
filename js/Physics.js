@@ -365,7 +365,7 @@ export function createVehicleCollisionBody( world, collisionProfile, position, q
 		gravityFactor: 0.0,
 		angularDamping: 1.5,
 		motionQuality: MotionQuality.LINEAR_CAST,
-		allowedDegreesOfFreedom: dof( true, true, true, false, false, false ),
+		allowedDegreesOfFreedom: dof( true, true, true, true, true, true ),
 		collisionGroups,
 		collisionMask,
 	} );

@@ -36,11 +36,15 @@ const GROUP_GROUND = 1 << 0;
 const GROUP_WALL = 1 << 1;
 const GROUP_VEHICLE_SPHERE = 1 << 2;
 const GROUP_VEHICLE_COLLIDER = 1 << 3;
+const GROUND_COLLISION_MASK = GROUP_VEHICLE_SPHERE | GROUP_VEHICLE_COLLIDER;
+const VEHICLE_COLLIDER_MASK = GROUP_WALL | GROUP_GROUND;
 const GROUND_PROBE_START_HEIGHT = 2.5;
 const GROUND_PROBE_RAY_FAR = 4.5;
 const GROUND_CONTACT_DISTANCE = 0.75;
 const GROUND_PROBE_RADIUS = 0.05;
 const GROUND_SURFACE_OVERLAP_TOLERANCE = 0.12;
+const CAPSULE_UPRIGHT_RETURN_RATE_GROUNDED = 6.0;
+const CAPSULE_UPRIGHT_RETURN_RATE_AIRBORNE = 10.0;
 
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
@@ -80,6 +84,7 @@ const debugWallGroup = new THREE.Group();
 debugWallGroup.visible = false;
 scene.add( debugWallGroup );
 const vehicleCollisionRotation = new THREE.Quaternion().setFromEuler( new THREE.Euler( Math.PI / 2, 0, 0 ) );
+const vehicleCollisionRotationInverse = vehicleCollisionRotation.clone().invert();
 const groundProbeBase = new THREE.Vector3();
 const groundProbeOrigin = new THREE.Vector3();
 const groundProbeWorld = new THREE.Vector3();
@@ -87,6 +92,9 @@ const groundProbeNormal = new THREE.Vector3();
 const groundProbeForward = new THREE.Vector3();
 const groundProbeRight = new THREE.Vector3();
 const groundHitNormal = new THREE.Vector3();
+const capsuleVisualQuat = new THREE.Quaternion();
+const capsuleTargetVisualQuat = new THREE.Quaternion();
+const capsuleUp = new THREE.Vector3();
 const groundProbeOriginArray = [ 0, 0, 0 ];
 const groundProbeQuatArray = [ 0, 0, 0, 1 ];
 const groundProbeScaleArray = [ 1, 1, 1 ];
@@ -258,7 +266,7 @@ async function init() {
 
 	debugWallGroup.clear();
 	const wallProbeBoxes = buildWallColliders( world, null, customCells, GROUP_WALL, GROUP_VEHICLE_COLLIDER );
-	buildRampColliders( world, customCells, models.ramp, GROUP_GROUND, GROUP_VEHICLE_SPHERE, debugWallGroup );
+	buildRampColliders( world, customCells, models.ramp, GROUP_GROUND, GROUND_COLLISION_MASK, debugWallGroup );
 	const groundProbeShape = sphere.create( { radius: GROUND_PROBE_RADIUS } );
 	const groundProbeCollector = createClosestCastShapeCollector();
 	const groundProbeSettings = createDefaultCastShapeSettings();
@@ -293,7 +301,7 @@ async function init() {
 		friction: 5.0,
 		restitution: 0.0,
 		collisionGroups: GROUP_GROUND,
-		collisionMask: GROUP_VEHICLE_SPHERE,
+		collisionMask: GROUND_COLLISION_MASK,
 	} );
 
 	const vehicle = new Vehicle();
@@ -337,7 +345,7 @@ async function init() {
 		],
 		[ collisionBodyQuat.x, collisionBodyQuat.y, collisionBodyQuat.z, collisionBodyQuat.w ],
 		GROUP_VEHICLE_COLLIDER,
-		GROUP_WALL
+		VEHICLE_COLLIDER_MASK
 	);
 	createVehicleCollisionConstraint( world, sphereBody, collisionBody, vehicleCollision );
 	vehicle.collisionBody = collisionBody;
@@ -360,6 +368,56 @@ async function init() {
 
 	const _forward = new THREE.Vector3();
 	const _collisionQuat = new THREE.Quaternion();
+
+	function getCapsuleTiltNormal() {
+
+		capsuleVisualQuat.set(
+			collisionBody.quaternion[ 0 ],
+			collisionBody.quaternion[ 1 ],
+			collisionBody.quaternion[ 2 ],
+			collisionBody.quaternion[ 3 ]
+		).multiply( vehicleCollisionRotationInverse );
+		capsuleUp.set( 0, 1, 0 ).applyQuaternion( capsuleVisualQuat ).normalize();
+
+		if ( capsuleUp.y < 0 ) capsuleUp.negate();
+
+		return capsuleUp;
+
+	}
+
+	function relaxCapsuleOrientation( dt, groundState ) {
+
+		let relaxRate = CAPSULE_UPRIGHT_RETURN_RATE_AIRBORNE;
+
+		if ( groundState?.isGrounded ) {
+
+			const supportY = groundState.supportNormal?.y ?? 1;
+			const flatFactor = THREE.MathUtils.clamp( THREE.MathUtils.inverseLerp( 0.94, 0.995, supportY ), 0, 1 );
+			relaxRate = CAPSULE_UPRIGHT_RETURN_RATE_GROUNDED * flatFactor;
+
+		}
+
+		if ( relaxRate <= 0 ) return;
+
+		capsuleVisualQuat.set(
+			collisionBody.quaternion[ 0 ],
+			collisionBody.quaternion[ 1 ],
+			collisionBody.quaternion[ 2 ],
+			collisionBody.quaternion[ 3 ]
+		).multiply( vehicleCollisionRotationInverse );
+		capsuleTargetVisualQuat.setFromAxisAngle( THREE.Object3D.DEFAULT_UP, vehicle.heading );
+		capsuleVisualQuat.slerp( capsuleTargetVisualQuat, THREE.MathUtils.clamp( dt * relaxRate, 0, 1 ) );
+
+		_collisionQuat.copy( capsuleVisualQuat ).multiply( vehicleCollisionRotation );
+		rigidBody.setQuaternion( world, collisionBody, [
+			_collisionQuat.x,
+			_collisionQuat.y,
+			_collisionQuat.z,
+			_collisionQuat.w
+		], false );
+		rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
+
+	}
 
 	function sampleGroundState() {
 
@@ -414,10 +472,12 @@ async function init() {
 
 			closestDistance = Math.min( closestDistance, Math.max( distanceToSurface, 0 ) );
 
-			if ( distanceToSurface > GROUND_CONTACT_DISTANCE ) continue;
+			if ( distanceToSurface <= GROUND_CONTACT_DISTANCE ) {
 
-			groundProbeNormal.add( groundHitNormal.fromArray( hit.normal ).normalize() );
-			hitCount ++;
+				groundProbeNormal.add( groundHitNormal.fromArray( hit.normal ).normalize() );
+				hitCount ++;
+
+			}
 
 		}
 
@@ -431,7 +491,8 @@ async function init() {
 
 		return {
 			isGrounded: closestDistance <= GROUND_CONTACT_DISTANCE,
-			normal: groundProbeNormal.clone(),
+			normal: getCapsuleTiltNormal().clone(),
+			supportNormal: groundProbeNormal.clone(),
 		};
 
 	}
@@ -464,15 +525,9 @@ async function init() {
 
 		updateWorld( world, contactListener, dt );
 
-		vehicle.update( dt, input, sampleGroundState() );
-		_collisionQuat.copy( vehicle.container.quaternion ).multiply( vehicleCollisionRotation );
-		rigidBody.setQuaternion( world, collisionBody, [
-			_collisionQuat.x,
-			_collisionQuat.y,
-			_collisionQuat.z,
-			_collisionQuat.w
-		], false );
-		rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
+		const groundState = sampleGroundState();
+		vehicle.update( dt, input, groundState );
+		relaxCapsuleOrientation( dt, groundState );
 		if ( vehicle.justReset ) {
 
 			debugProbeOffset.set(
