@@ -83,8 +83,6 @@ const debugProbeOffset = new THREE.Vector3();
 const debugWallGroup = new THREE.Group();
 debugWallGroup.visible = false;
 scene.add( debugWallGroup );
-const vehicleCollisionRotation = new THREE.Quaternion().setFromEuler( new THREE.Euler( Math.PI / 2, 0, 0 ) );
-const vehicleCollisionRotationInverse = vehicleCollisionRotation.clone().invert();
 const groundProbeBase = new THREE.Vector3();
 const groundProbeOrigin = new THREE.Vector3();
 const groundProbeWorld = new THREE.Vector3();
@@ -322,18 +320,13 @@ async function init() {
 
 	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
 	const vehicleCollision = createVehicleCollisionProfile( vehicleModel );
-	const collisionBodyQuat = new THREE.Quaternion().copy( vehicle.container.quaternion ).multiply( vehicleCollisionRotation );
+	const collisionBodyQuat = new THREE.Quaternion().copy( vehicle.container.quaternion ).multiply( vehicleCollision.alignment );
 	debugProbeBox.geometry.dispose();
-	debugProbeBox.geometry = new THREE.CapsuleGeometry(
-		vehicleCollision.radius,
-		vehicleCollision.halfHeightOfCylinder * 2,
-		4,
-		8
-	);
+	debugProbeBox.geometry = vehicleCollision.debugGeometry;
 	debugProbeOffset.set(
-		vehicleCollision.offsetX,
-		vehicleCollision.offsetY - VEHICLE_SPHERE_RADIUS,
-		vehicleCollision.offsetZ
+		vehicleCollision.bodyOffsetX - vehicleCollision.sphereAnchorX,
+		vehicleCollision.bodyOffsetY - vehicleCollision.sphereAnchorY,
+		vehicleCollision.bodyOffsetZ - vehicleCollision.sphereAnchorZ
 	).applyQuaternion( vehicle.container.quaternion );
 	const collisionBody = createVehicleCollisionBody(
 		world,
@@ -376,7 +369,7 @@ async function init() {
 			collisionBody.quaternion[ 1 ],
 			collisionBody.quaternion[ 2 ],
 			collisionBody.quaternion[ 3 ]
-		).multiply( vehicleCollisionRotationInverse );
+		).multiply( vehicleCollision.alignmentInverse );
 		capsuleUp.set( 0, 1, 0 ).applyQuaternion( capsuleVisualQuat ).normalize();
 
 		if ( capsuleUp.y < 0 ) capsuleUp.negate();
@@ -404,11 +397,11 @@ async function init() {
 			collisionBody.quaternion[ 1 ],
 			collisionBody.quaternion[ 2 ],
 			collisionBody.quaternion[ 3 ]
-		).multiply( vehicleCollisionRotationInverse );
+		).multiply( vehicleCollision.alignmentInverse );
 		capsuleTargetVisualQuat.setFromAxisAngle( THREE.Object3D.DEFAULT_UP, vehicle.heading );
 		capsuleVisualQuat.slerp( capsuleTargetVisualQuat, THREE.MathUtils.clamp( dt * relaxRate, 0, 1 ) );
 
-		_collisionQuat.copy( capsuleVisualQuat ).multiply( vehicleCollisionRotation );
+		_collisionQuat.copy( capsuleVisualQuat ).multiply( vehicleCollision.alignment );
 		rigidBody.setQuaternion( world, collisionBody, [
 			_collisionQuat.x,
 			_collisionQuat.y,
@@ -531,9 +524,9 @@ async function init() {
 		if ( vehicle.justReset ) {
 
 			debugProbeOffset.set(
-				vehicleCollision.offsetX,
-				vehicleCollision.offsetY - VEHICLE_SPHERE_RADIUS,
-				vehicleCollision.offsetZ
+				vehicleCollision.bodyOffsetX - vehicleCollision.sphereAnchorX,
+				vehicleCollision.bodyOffsetY - vehicleCollision.sphereAnchorY,
+				vehicleCollision.bodyOffsetZ - vehicleCollision.sphereAnchorZ
 			).applyQuaternion( vehicle.container.quaternion );
 			rigidBody.setPosition( world, collisionBody, [
 				vehicle.spherePos.x + debugProbeOffset.x,

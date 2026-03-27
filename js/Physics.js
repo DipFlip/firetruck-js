@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { rigidBody, box, sphere, capsule, convexHull, pointConstraint, ConstraintSpace, MotionType, MotionQuality, dof } from 'crashcat';
+import { rigidBody, box, sphere, capsule, convexHull, transformed, offsetCenterOfMass, pointConstraint, ConstraintSpace, MotionType, MotionQuality, dof } from 'crashcat';
 import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
 const VEHICLE_SPHERE_RADIUS = 0.5;
+const VEHICLE_COLLISION_ALIGNMENT = new THREE.Quaternion().setFromEuler( new THREE.Euler( Math.PI / 2, 0, 0 ) );
 const VEHICLE_COLLISION_ALIGNMENT_INV = new THREE.Quaternion().setFromEuler( new THREE.Euler( - Math.PI / 2, 0, 0 ) );
 const _tmpVec3A = new THREE.Vector3();
 const _tmpVec3B = new THREE.Vector3();
@@ -198,6 +199,51 @@ function collectNodeVerticesInRootSpace( root, node ) {
 
 }
 
+function buildNodeDebugGeometryInRootSpace( root, node ) {
+
+	root.updateMatrixWorld( true );
+	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
+	const positions = [];
+
+	node.traverse( ( child ) => {
+
+		if ( ! child.isMesh || ! child.geometry ) return;
+
+		const positionAttr = child.geometry.getAttribute( 'position' );
+		if ( ! positionAttr ) return;
+
+		const index = child.geometry.getIndex();
+		const toLocal = new THREE.Matrix4().multiplyMatrices( toRootSpace, child.matrixWorld );
+
+		function pushVertex( vertexIndex ) {
+
+			_tmpVec3A.fromBufferAttribute( positionAttr, vertexIndex ).applyMatrix4( toLocal );
+			positions.push(
+				_tmpVec3A.x * GRID_SCALE,
+				_tmpVec3A.y * GRID_SCALE,
+				_tmpVec3A.z * GRID_SCALE
+			);
+
+		}
+
+		if ( index ) {
+
+			for ( let i = 0; i < index.count; i ++ ) pushVertex( index.array[ i ] );
+
+		} else {
+
+			for ( let i = 0; i < positionAttr.count; i ++ ) pushVertex( i );
+
+		}
+
+	} );
+
+	const geometry = new THREE.BufferGeometry();
+	geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( positions, 3 ) );
+	return geometry;
+
+}
+
 function getRampShape( rampModel ) {
 
 	if ( _rampShape ) return _rampShape;
@@ -317,8 +363,10 @@ export function buildRampColliders( world, customCells, rampModel, collisionGrou
 export function createVehicleCollisionProfile( model ) {
 
 	const colliderNode = findNamedNode( model, ( name ) => name.includes( 'collider' ) );
+	const sphereAnchorNode = findNamedNode( model, ( name ) => name === 'sphereanchor' || name === 'driveball' || name === 'ballanchor' );
 	const profileSource = colliderNode || findNamedNode( model, ( name ) => name === 'body' ) || model;
 	const bounds = computeNodeBoundsInRootSpace( model, profileSource );
+	const sphereAnchor = sphereAnchorNode ? computeNodeOriginInRootSpace( model, sphereAnchorNode ).clone() : new THREE.Vector3( 0, VEHICLE_SPHERE_RADIUS, 0 );
 
 	if ( ! bounds || bounds.isEmpty() ) {
 
@@ -326,8 +374,21 @@ export function createVehicleCollisionProfile( model ) {
 			offsetX: 0,
 			offsetY: 0.9,
 			offsetZ: 0,
+			bodyOffsetX: 0,
+			bodyOffsetY: 0.9,
+			bodyOffsetZ: 0,
 			radius: 0.45,
 			halfHeightOfCylinder: 0.9,
+			alignment: VEHICLE_COLLISION_ALIGNMENT.clone(),
+			alignmentInverse: VEHICLE_COLLISION_ALIGNMENT_INV.clone(),
+			sphereAnchorX: sphereAnchor.x,
+			sphereAnchorY: sphereAnchor.y,
+			sphereAnchorZ: sphereAnchor.z,
+			debugGeometry: new THREE.CapsuleGeometry( 0.45, 1.8, 4, 8 ),
+			shape: capsule.create( {
+				radius: 0.45,
+				halfHeightOfCylinder: 0.9,
+			} ),
 		};
 
 	}
@@ -337,13 +398,67 @@ export function createVehicleCollisionProfile( model ) {
 
 	const radius = Math.max( Math.min( _tmpVec3B.x, _tmpVec3B.y ) * 0.45, 0.25 );
 	const halfLength = Math.max( _tmpVec3B.z * 0.5, radius );
+	const hullPositions = colliderNode ? collectNodeVerticesInRootSpace( model, colliderNode ) : [];
+
+	if ( hullPositions.length >= 12 ) {
+
+		const rawShape = convexHull.create( {
+			positions: hullPositions,
+			convexRadius: 0,
+		} );
+		const shape = offsetCenterOfMass.create( {
+			shape: transformed.create( {
+				shape: rawShape,
+				position: [ rawShape.centerOfMass[ 0 ], rawShape.centerOfMass[ 1 ], rawShape.centerOfMass[ 2 ] ],
+				quaternion: [ 0, 0, 0, 1 ],
+			} ),
+			offset: [ - rawShape.centerOfMass[ 0 ], - rawShape.centerOfMass[ 1 ], - rawShape.centerOfMass[ 2 ] ],
+		} );
+
+		return {
+			offsetX: shape.centerOfMass[ 0 ],
+			offsetY: shape.centerOfMass[ 1 ],
+			offsetZ: shape.centerOfMass[ 2 ],
+			bodyOffsetX: 0,
+			bodyOffsetY: 0,
+			bodyOffsetZ: 0,
+			radius,
+			halfHeightOfCylinder: Math.max( halfLength - radius, 0 ),
+			alignment: new THREE.Quaternion(),
+			alignmentInverse: new THREE.Quaternion(),
+			sphereAnchorX: sphereAnchor.x,
+			sphereAnchorY: sphereAnchor.y,
+			sphereAnchorZ: sphereAnchor.z,
+			debugGeometry: buildNodeDebugGeometryInRootSpace( model, colliderNode ),
+			shape,
+		};
+
+	}
 
 	return {
 		offsetX: _tmpVec3A.x,
 		offsetY: _tmpVec3A.y,
 		offsetZ: _tmpVec3A.z,
+		bodyOffsetX: _tmpVec3A.x,
+		bodyOffsetY: _tmpVec3A.y,
+		bodyOffsetZ: _tmpVec3A.z,
 		radius,
 		halfHeightOfCylinder: Math.max( halfLength - radius, 0 ),
+		alignment: VEHICLE_COLLISION_ALIGNMENT.clone(),
+		alignmentInverse: VEHICLE_COLLISION_ALIGNMENT_INV.clone(),
+		sphereAnchorX: sphereAnchor.x,
+		sphereAnchorY: sphereAnchor.y,
+		sphereAnchorZ: sphereAnchor.z,
+		debugGeometry: new THREE.CapsuleGeometry(
+			radius,
+			Math.max( halfLength - radius, 0 ) * 2,
+			4,
+			8
+		),
+		shape: capsule.create( {
+			radius,
+			halfHeightOfCylinder: Math.max( halfLength - radius, 0 ),
+		} ),
 	};
 
 }
@@ -351,10 +466,7 @@ export function createVehicleCollisionProfile( model ) {
 export function createVehicleCollisionBody( world, collisionProfile, position, quaternion, collisionGroups, collisionMask ) {
 
 	return rigidBody.create( world, {
-		shape: capsule.create( {
-			radius: collisionProfile.radius,
-			halfHeightOfCylinder: collisionProfile.halfHeightOfCylinder,
-		} ),
+		shape: collisionProfile.shape,
 		motionType: MotionType.DYNAMIC,
 		objectLayer: world._OL_MOVING,
 		position,
@@ -375,10 +487,10 @@ export function createVehicleCollisionBody( world, collisionProfile, position, q
 export function createVehicleCollisionConstraint( world, sphereBody, collisionBody, collisionProfile ) {
 
 	const collisionAnchor = _tmpVec3C.set(
-		- collisionProfile.offsetX,
-		VEHICLE_SPHERE_RADIUS - collisionProfile.offsetY,
-		- collisionProfile.offsetZ
-	).applyQuaternion( VEHICLE_COLLISION_ALIGNMENT_INV );
+		collisionProfile.sphereAnchorX - collisionProfile.offsetX,
+		collisionProfile.sphereAnchorY - collisionProfile.offsetY,
+		collisionProfile.sphereAnchorZ - collisionProfile.offsetZ
+	).applyQuaternion( collisionProfile.alignmentInverse );
 
 	return pointConstraint.create( world, {
 		bodyIdA: sphereBody.id,
@@ -436,6 +548,14 @@ function computeNodeBoundsInRootSpace( root, node ) {
 	} );
 
 	return foundMesh ? bounds : null;
+
+}
+
+function computeNodeOriginInRootSpace( root, node ) {
+
+	root.updateMatrixWorld( true );
+	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
+	return _tmpVec3A.set( 0, 0, 0 ).applyMatrix4( node.matrixWorld ).applyMatrix4( toRootSpace );
 
 }
 
