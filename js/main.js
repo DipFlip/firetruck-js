@@ -43,9 +43,6 @@ const GROUND_PROBE_RAY_FAR = 4.5;
 const GROUND_CONTACT_DISTANCE = 0.75;
 const GROUND_PROBE_RADIUS = 0.05;
 const GROUND_SURFACE_OVERLAP_TOLERANCE = 0.12;
-const CAPSULE_UPRIGHT_RETURN_RATE_GROUNDED = 6.0;
-const CAPSULE_UPRIGHT_RETURN_RATE_AIRBORNE = 10.0;
-
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
 debugUi.style.left = '16px';
@@ -97,7 +94,6 @@ const supportAverageNormal = new THREE.Vector3();
 const supportMidA = new THREE.Vector3();
 const supportMidB = new THREE.Vector3();
 const capsuleVisualQuat = new THREE.Quaternion();
-const capsuleTargetVisualQuat = new THREE.Quaternion();
 const capsuleUp = new THREE.Vector3();
 const groundProbeOriginArray = [ 0, 0, 0 ];
 const groundProbeQuatArray = [ 0, 0, 0, 1 ];
@@ -388,30 +384,9 @@ async function init() {
 
 	}
 
-	function relaxCapsuleOrientation( dt, groundState ) {
+	function syncCollisionOrientation() {
 
-		let relaxRate = CAPSULE_UPRIGHT_RETURN_RATE_AIRBORNE;
-
-		if ( groundState?.isGrounded ) {
-
-			const supportY = groundState.supportNormal?.y ?? 1;
-			const flatFactor = THREE.MathUtils.clamp( THREE.MathUtils.inverseLerp( 0.94, 0.995, supportY ), 0, 1 );
-			relaxRate = CAPSULE_UPRIGHT_RETURN_RATE_GROUNDED * flatFactor;
-
-		}
-
-		if ( relaxRate <= 0 ) return;
-
-		capsuleVisualQuat.set(
-			collisionBody.quaternion[ 0 ],
-			collisionBody.quaternion[ 1 ],
-			collisionBody.quaternion[ 2 ],
-			collisionBody.quaternion[ 3 ]
-		).multiply( vehicleCollision.alignmentInverse );
-		capsuleTargetVisualQuat.setFromAxisAngle( THREE.Object3D.DEFAULT_UP, vehicle.heading );
-		capsuleVisualQuat.slerp( capsuleTargetVisualQuat, THREE.MathUtils.clamp( dt * relaxRate, 0, 1 ) );
-
-		_collisionQuat.copy( capsuleVisualQuat ).multiply( vehicleCollision.alignment );
+		_collisionQuat.copy( vehicle.container.quaternion ).multiply( vehicleCollision.alignment );
 		rigidBody.setQuaternion( world, collisionBody, [
 			_collisionQuat.x,
 			_collisionQuat.y,
@@ -633,7 +608,7 @@ async function init() {
 
 		const groundState = sampleGroundState();
 		vehicle.update( dt, input, groundState );
-		relaxCapsuleOrientation( dt, groundState );
+		syncCollisionOrientation();
 		if ( vehicle.justReset ) {
 
 			debugProbeOffset.set(
