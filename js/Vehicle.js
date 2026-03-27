@@ -59,6 +59,7 @@ export class Vehicle {
 		this.wheelBR = null;
 		this.bodyRideHeightGrounded = 0.2;
 		this.bodyRideHeightAirborne = 0.3;
+		this.bodyLongitudinalOffset = 0;
 
 		this.inputX = 0;
 		this.inputZ = 0;
@@ -128,6 +129,7 @@ export class Vehicle {
 
 			this.bodyRideHeightGrounded = 0.12;
 			this.bodyRideHeightAirborne = 0.22;
+			this.bodyLongitudinalOffset = 0.2;
 
 		}
 
@@ -199,7 +201,7 @@ export class Vehicle {
 
 			if ( ! this.colliding ) {
 
-				if ( this.bodyNode ) this.bodyNode.position.set( 0, 0.1, 0 );
+				if ( this.bodyNode ) this.bodyNode.position.y = this.bodyRideHeightGrounded;
 
 			}
 
@@ -374,6 +376,7 @@ export class Vehicle {
 			this.isGrounded ? this.bodyRideHeightGrounded : this.bodyRideHeightAirborne,
 			dt * 5
 		);
+		this.bodyNode.position.z = THREE.MathUtils.lerp( this.bodyNode.position.z, this.bodyLongitudinalOffset, dt * 8 );
 
 	}
 
@@ -387,7 +390,7 @@ export class Vehicle {
 			const wheel = state.node;
 			wheel.rotation.x += this.acceleration;
 
-			let targetY = state.restLocalY + state.maxDroop;
+			let targetY = state.restLocalY - state.maxDroop;
 			const support = supportMap?.get( state.key );
 
 			if ( support?.isSupported ) {
@@ -396,8 +399,8 @@ export class Vehicle {
 				this.container.worldToLocal( _tmpVecC );
 				targetY = THREE.MathUtils.clamp(
 					_tmpVecC.y,
-					state.restLocalY - state.maxCompression,
-					state.restLocalY + state.maxDroop
+					state.restLocalY - state.maxDroop,
+					state.restLocalY + state.maxCompression
 				);
 
 			}
