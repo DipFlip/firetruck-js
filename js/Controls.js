@@ -11,6 +11,7 @@ export class Controls {
 		this.cannonY = 0;
 		this.water = false;
 		this.jump = false;
+		this.jumpHeld = false;
 		this.prevJumpDown = false;
 		this.trackedKeys = new Set( [
 			'KeyA', 'KeyD', 'KeyW', 'KeyS',
@@ -288,7 +289,10 @@ export class Controls {
 		this.cannonX = cannonX;
 		this.cannonY = cannonY;
 		this.water = water;
-		this.jump = jumpDown && ! this.prevJumpDown;
+		const jumpPressed = jumpDown && ! this.prevJumpDown;
+		const jumpReleased = ! jumpDown && this.prevJumpDown;
+		this.jump = jumpDown;
+		this.jumpHeld = jumpDown;
 		this.prevJumpDown = jumpDown;
 
 		return {
@@ -298,6 +302,9 @@ export class Controls {
 			cannonY,
 			water,
 			jump: this.jump,
+			jumpHeld: this.jumpHeld,
+			jumpPressed,
+			jumpReleased,
 			x: driveX,
 			z: driveZ,
 		};

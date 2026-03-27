@@ -43,6 +43,7 @@ const VEHICLE_COLLIDER_MASK = GROUP_WALL | GROUP_GROUND;
 const GROUND_PROBE_START_HEIGHT = 2.5;
 const GROUND_PROBE_RAY_FAR = 4.5;
 const GROUND_CONTACT_DISTANCE = 0.75;
+const GROUND_CONTACT_LENIENCY = 0.18;
 const GROUND_PROBE_RADIUS = 0.05;
 const GROUND_SURFACE_OVERLAP_TOLERANCE = 0.12;
 const WATER_RANGE = 26;
@@ -879,12 +880,15 @@ async function init() {
 		}
 
 		if ( hitCount > 0 ) groundProbeNormal.normalize();
+		const supportCount = wheelSupports.filter( ( support ) => support.isSupported ).length;
 		const rigNormal = computeSupportRigNormal( wheelSupports ) ?? ( hitCount > 0 ? groundProbeNormal.clone() : null );
 
 		return {
-			isGrounded: closestDistance <= GROUND_CONTACT_DISTANCE,
+			isGrounded: closestDistance <= GROUND_CONTACT_DISTANCE + GROUND_CONTACT_LENIENCY || supportCount > 0,
+			closestDistance,
 			normal: rigNormal ?? getCapsuleTiltNormal().clone(),
 			supportNormal: hitCount > 0 ? groundProbeNormal.clone() : null,
+			supportCount,
 			supports: wheelSupports,
 		};
 

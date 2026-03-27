@@ -16,13 +16,17 @@ const _vehicleRight = new THREE.Vector3();
 
 const SPEED_SCALE = 12.5;
 const LINEAR_DAMP = 0.1;
-const JUMP_SPEED = 5.5;
+const MIN_JUMP_SPEED = 2.7;
+const MAX_JUMP_SPEED = 8.25;
+const JUMP_CHARGE_DURATION = 0.75;
+const JUMP_BODY_SQUAT = 0.09;
+const JUMP_WHEEL_COMPRESSION = 0.78;
 const VEHICLE_SPHERE_RADIUS = 0.5;
-const GROUNDED_VERTICAL_SPEED = 1.5;
+const GROUNDED_VERTICAL_SPEED = 2.75;
 const AIR_CONTROL_FACTOR = 0.35;
 const CANNON_ELEVATION = 0.08;
 const WATER_RECOIL_ACCEL = 8.5;
-const JUMP_PITCH_KICK = 0.16;
+const JUMP_PITCH_KICK = 0.24;
 
 function lerpAngle( a, b, t ) {
 
@@ -76,6 +80,8 @@ export class Vehicle {
 		this.isGrounded = false;
 		this.justReset = false;
 		this.visualSupportCount = 0;
+		this.jumpCharge = 0;
+		this.jumpSquat = 0;
 		this.jumpPitchBoost = 0;
 		this.cannonYawPivot = new THREE.Object3D();
 		this.cannonPitchPivot = new THREE.Object3D();
@@ -180,23 +186,57 @@ export class Vehicle {
 
 		}
 
-		const isGrounded = !! groundState?.isGrounded &&
+		const supportCount = groundState?.supportCount ?? 0;
+		const isGrounded = ( !! groundState?.isGrounded || supportCount > 0 ) &&
 			Math.abs( this.sphereVel.y ) <= GROUNDED_VERTICAL_SPEED;
 		this.isGrounded = isGrounded;
-		const hasVisualSupport = !! groundState?.supports?.some( ( support ) => support.isSupported );
-		this.visualSupportCount = hasVisualSupport ? groundState.supports.filter( ( support ) => support.isSupported ).length : 0;
+		const hasVisualSupport = supportCount > 0;
+		this.visualSupportCount = supportCount;
+		const jumpHeld = !! controlsInput.jumpHeld;
+		const jumpReleased = !! controlsInput.jumpReleased;
+		let jumpChargeRatio = THREE.MathUtils.clamp( this.jumpCharge / JUMP_CHARGE_DURATION, 0, 1 );
 
-		if ( controlsInput.jump && isGrounded && this.rigidBody ) {
+		if ( isGrounded && this.rigidBody ) {
 
-			rigidBody.setLinearVelocity( this.physicsWorld, this.rigidBody, [
-				this.sphereVel.x,
-				Math.max( this.sphereVel.y, JUMP_SPEED ),
-				this.sphereVel.z
-			] );
-			this.sphereVel.y = Math.max( this.sphereVel.y, JUMP_SPEED );
-			this.jumpPitchBoost = Math.max( this.jumpPitchBoost, JUMP_PITCH_KICK );
+			if ( jumpHeld ) {
+
+				this.jumpCharge = Math.min( JUMP_CHARGE_DURATION, this.jumpCharge + dt );
+				jumpChargeRatio = THREE.MathUtils.clamp( this.jumpCharge / JUMP_CHARGE_DURATION, 0, 1 );
+
+			} else if ( jumpReleased && this.jumpCharge > 0 ) {
+
+				jumpChargeRatio = THREE.MathUtils.clamp( this.jumpCharge / JUMP_CHARGE_DURATION, 0, 1 );
+				const jumpSpeed = THREE.MathUtils.lerp( MIN_JUMP_SPEED, MAX_JUMP_SPEED, jumpChargeRatio );
+
+				rigidBody.setLinearVelocity( this.physicsWorld, this.rigidBody, [
+					this.sphereVel.x,
+					Math.max( this.sphereVel.y, jumpSpeed ),
+					this.sphereVel.z
+				] );
+				this.sphereVel.y = Math.max( this.sphereVel.y, jumpSpeed );
+				this.jumpPitchBoost = Math.max( this.jumpPitchBoost, JUMP_PITCH_KICK * THREE.MathUtils.lerp( 0.7, 1.2, jumpChargeRatio ) );
+				this.jumpCharge = 0;
+				jumpChargeRatio = 0;
+
+			} else {
+
+				this.jumpCharge = 0;
+				jumpChargeRatio = 0;
+
+			}
+
+		} else {
+
+			this.jumpCharge = 0;
+			jumpChargeRatio = 0;
 
 		}
+
+		this.jumpSquat = THREE.MathUtils.lerp(
+			this.jumpSquat,
+			isGrounded && jumpHeld ? jumpChargeRatio : 0,
+			dt * ( jumpHeld ? 7 : 12 )
+		);
 
 		let direction = Math.sign( this.linearSpeed );
 		if ( direction === 0 ) direction = Math.abs( this.inputZ ) > 0.1 ? Math.sign( this.inputZ ) : 1;
@@ -282,6 +322,8 @@ export class Vehicle {
 			this.angularSpeed = 0;
 			this.acceleration = 0;
 			this.heading = 0;
+			this.jumpCharge = 0;
+			this.jumpSquat = 0;
 			this.jumpPitchBoost = 0;
 			this.container.rotation.set( 0, 0, 0 );
 			this.container.quaternion.identity();
@@ -487,7 +529,9 @@ export class Vehicle {
 
 		this.bodyNode.position.y = THREE.MathUtils.lerp(
 			this.bodyNode.position.y,
-			this.isGrounded ? this.bodyRideHeightGrounded : this.bodyRideHeightAirborne,
+			this.isGrounded
+				? this.bodyRideHeightGrounded - JUMP_BODY_SQUAT * this.jumpSquat
+				: this.bodyRideHeightAirborne,
 			dt * 5
 		);
 		this.bodyNode.position.z = THREE.MathUtils.lerp( this.bodyNode.position.z, this.bodyLongitudinalOffset, dt * 8 );
@@ -515,6 +559,10 @@ export class Vehicle {
 					_tmpVecC.y,
 					state.restLocalY - state.maxDroop,
 					state.restLocalY + state.maxCompression
+				);
+				targetY = Math.min(
+					state.restLocalY + state.maxCompression,
+					targetY + state.maxCompression * JUMP_WHEEL_COMPRESSION * this.jumpSquat
 				);
 
 			}
