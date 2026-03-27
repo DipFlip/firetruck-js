@@ -145,7 +145,7 @@ export class GameAudio {
 
 		if ( ! this.unlocked || ! this.impactBuffer ) return;
 
-		const volume = THREE.MathUtils.clamp( remap( impactVelocity, 0, 6, 0.01, 1.0 ), 0.01, 1.0 );
+		const volume = THREE.MathUtils.clamp( remap( impactVelocity, 0, 6, 0.01, 0.5 ), 0.01, 0.5 );
 
 		const sound = new THREE.Audio( this.listener );
 		sound.setBuffer( this.impactBuffer );
