@@ -184,8 +184,12 @@ async function loadModels() {
 
 				} );
 
-				// Godot imports vehicle models at root_scale=0.5
-				if ( name.startsWith( 'vehicle-' ) ) {
+				// Vehicle assets are authored in different source scales.
+				if ( name === PLAYER_VEHICLE_MODEL ) {
+
+					gltf.scene.scale.setScalar( 0.75 );
+
+				} else if ( name.startsWith( 'vehicle-' ) ) {
 
 					gltf.scene.scale.setScalar( 0.5 );
 
