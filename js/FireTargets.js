@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 
 const FIRE_DAMAGE_PER_SECOND = 0.45;
-const WATER_SPEED = 12;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
@@ -301,10 +300,10 @@ export class FireTargetSystem {
 
 	}
 
-	spray( origin, direction, maxRange, dt ) {
+	spray( origin, launchVelocity, maxRange ) {
 
 		_segmentStart.copy( origin );
-		_segmentVelocity.copy( direction ).multiplyScalar( WATER_SPEED );
+		_segmentVelocity.copy( launchVelocity );
 		let travelled = 0;
 
 		for ( let i = 0; i < WATER_SEGMENT_COUNT; i ++ ) {
@@ -319,18 +318,6 @@ export class FireTargetSystem {
 
 				const hit = intersectSegmentBox( target, _segmentStart, _segmentEnd );
 				if ( ! hit ) continue;
-
-				target.fireAmount = Math.max( 0, target.fireAmount - dt * FIRE_DAMAGE_PER_SECOND );
-
-				if ( target.fireAmount <= 0 && ! target.extinguished ) {
-
-					target.extinguished = true;
-					target.fireAmount = 0;
-					_tmpVec.copy( target.group.position );
-					_tmpVec.y += target.colliderBox.max.y * 0.6;
-					this.effects.emitExtinguishSmoke( _tmpVec, 18 );
-
-				}
 
 				return {
 					hit: true,
@@ -349,6 +336,40 @@ export class FireTargetSystem {
 		}
 
 		return null;
+
+	}
+
+	applyImpact( target, amount ) {
+
+		if ( ! target || target.extinguished || target.fireAmount <= 0 ) {
+
+			return {
+				applied: false,
+				extinguished: false,
+				position: null,
+			};
+
+		}
+
+		target.fireAmount = Math.max( 0, target.fireAmount - amount );
+		let extinguishPosition = null;
+
+		if ( target.fireAmount <= 0 && ! target.extinguished ) {
+
+			target.extinguished = true;
+			target.fireAmount = 0;
+			_tmpVec.copy( target.group.position );
+			_tmpVec.y += target.colliderBox.max.y * 0.6;
+			this.effects.emitExtinguishSmoke( _tmpVec, 18 );
+			extinguishPosition = _tmpVec.clone();
+
+		}
+
+		return {
+			applied: true,
+			extinguished: extinguishPosition !== null,
+			position: extinguishPosition,
+		};
 
 	}
 

@@ -21,6 +21,8 @@ const VEHICLE_SPHERE_RADIUS = 0.5;
 const GROUNDED_VERTICAL_SPEED = 1.5;
 const AIR_CONTROL_FACTOR = 0.35;
 const CANNON_ELEVATION = 0.08;
+const WATER_RECOIL_ACCEL = 8.5;
+const JUMP_PITCH_KICK = 0.16;
 
 function lerpAngle( a, b, t ) {
 
@@ -74,6 +76,7 @@ export class Vehicle {
 		this.isGrounded = false;
 		this.justReset = false;
 		this.visualSupportCount = 0;
+		this.jumpPitchBoost = 0;
 		this.cannonYawPivot = new THREE.Object3D();
 		this.cannonPitchPivot = new THREE.Object3D();
 		this.cannonMuzzle = new THREE.Object3D();
@@ -191,6 +194,7 @@ export class Vehicle {
 				this.sphereVel.z
 			] );
 			this.sphereVel.y = Math.max( this.sphereVel.y, JUMP_SPEED );
+			this.jumpPitchBoost = Math.max( this.jumpPitchBoost, JUMP_PITCH_KICK );
 
 		}
 
@@ -278,6 +282,7 @@ export class Vehicle {
 			this.angularSpeed = 0;
 			this.acceleration = 0;
 			this.heading = 0;
+			this.jumpPitchBoost = 0;
 			this.container.rotation.set( 0, 0, 0 );
 			this.container.quaternion.identity();
 			this.justReset = true;
@@ -415,7 +420,27 @@ export class Vehicle {
 		return {
 			origin: this.cannonOrigin,
 			direction: this.cannonDirection,
+			vehicleVelocity: this.modelVelocity,
 		};
+
+	}
+
+	applyWaterRecoil( direction, dt, strength = WATER_RECOIL_ACCEL ) {
+
+		if ( ! this.rigidBody || ! this.physicsWorld ) return;
+
+		const velocity = this.rigidBody.motionProperties.linearVelocity;
+		_tmpVec.copy( direction ).multiplyScalar( - strength * dt );
+		const nextVelocityX = velocity[ 0 ] + _tmpVec.x;
+		const nextVelocityY = velocity[ 1 ] + _tmpVec.y;
+		const nextVelocityZ = velocity[ 2 ] + _tmpVec.z;
+
+		rigidBody.setLinearVelocity( this.physicsWorld, this.rigidBody, [
+			nextVelocityX,
+			nextVelocityY,
+			nextVelocityZ
+		] );
+		this.sphereVel.set( nextVelocityX, nextVelocityY, nextVelocityZ );
 
 	}
 
@@ -442,9 +467,15 @@ export class Vehicle {
 
 		if ( ! this.bodyNode ) return;
 
+		this.jumpPitchBoost = THREE.MathUtils.lerp(
+			this.jumpPitchBoost,
+			0,
+			dt * ( this.isGrounded ? 7 : 3.5 )
+		);
+
 		this.bodyNode.rotation.x = lerpAngle(
 			this.bodyNode.rotation.x,
-			-( this.linearSpeed - this.acceleration ) / 6,
+			-( this.linearSpeed - this.acceleration ) / 6 - this.jumpPitchBoost,
 			dt * 10
 		);
 

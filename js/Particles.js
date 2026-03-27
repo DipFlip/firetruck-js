@@ -147,8 +147,6 @@ export class Effects {
 		this.splashEmitIndex = 0;
 		this.extinguishEmitIndex = 0;
 		this.waterAccumulator = 0;
-		this.splashAccumulator = 0;
-		this.splashDelayElapsed = 0;
 
 	}
 
@@ -166,33 +164,17 @@ export class Effects {
 		if ( waterState?.active ) {
 
 			this.waterAccumulator += dt * 240;
-			this.splashDelayElapsed += dt;
 
 			while ( this.waterAccumulator >= 1 ) {
 
-				this.emitWaterParticle( waterState.origin, waterState.direction );
+				this.emitWaterParticle( waterState.origin, waterState.velocity || waterState.direction );
 				this.waterAccumulator -= 1;
-
-			}
-
-			if ( waterState.impactPoint && this.splashDelayElapsed >= ( waterState.travelTime ?? 0 ) ) {
-
-				this.splashAccumulator += dt * ( waterState.hit ? 42 : 22 );
-
-				while ( this.splashAccumulator >= 1 ) {
-
-					this.emitSplashParticle( waterState.impactPoint, waterState.impactNormal || _up );
-					this.splashAccumulator -= 1;
-
-				}
 
 			}
 
 		} else {
 
 			this.waterAccumulator = 0;
-			this.splashAccumulator = 0;
-			this.splashDelayElapsed = 0;
 
 		}
 
@@ -229,7 +211,7 @@ export class Effects {
 
 	}
 
-	emitWaterParticle( origin, direction ) {
+	emitWaterParticle( origin, velocity ) {
 
 		const particle = this.waterParticles[ this.waterEmitIndex ];
 		this.waterEmitIndex = ( this.waterEmitIndex + 1 ) % this.waterParticles.length;
@@ -246,7 +228,7 @@ export class Effects {
 		particle.endScale = 0.045;
 		particle.startOpacity = 1.0;
 		particle.endOpacity = 0.12;
-		particle.velocity.copy( direction ).multiplyScalar( 12 + Math.random() * 2 ).add( _jitter.multiplyScalar( 14 ) );
+		particle.velocity.copy( velocity ).add( _jitter.multiplyScalar( 14 ) );
 		particle.maxLife = 0.46 + Math.random() * 0.16;
 		particle.life = particle.maxLife;
 		particle.damping = 0.45;
@@ -262,22 +244,36 @@ export class Effects {
 
 		_tangent.crossVectors( normal, Math.abs( normal.y ) > 0.9 ? new THREE.Vector3( 1, 0, 0 ) : _up ).normalize();
 		_bitangent.crossVectors( normal, _tangent ).normalize();
-		_jitter.copy( normal ).multiplyScalar( 0.8 + Math.random() * 1.4 )
-			.addScaledVector( _tangent, ( Math.random() - 0.5 ) * 2.2 )
-			.addScaledVector( _bitangent, ( Math.random() - 0.5 ) * 2.2 );
+		_jitter.copy( normal ).multiplyScalar( 0.5 + Math.random() * 1.0 )
+			.addScaledVector( _tangent, ( Math.random() - 0.5 ) * 2.8 )
+			.addScaledVector( _bitangent, ( Math.random() - 0.5 ) * 2.8 );
 
-		particle.sprite.position.copy( point );
+		particle.sprite.position.copy( point )
+			.addScaledVector( _tangent, ( Math.random() - 0.5 ) * 0.45 )
+			.addScaledVector( _bitangent, ( Math.random() - 0.5 ) * 0.45 );
 		particle.sprite.visible = true;
-		particle.startScale = 0.08 + Math.random() * 0.08;
+		particle.startScale = 0.1 + Math.random() * 0.12;
 		particle.endScale = 0.02;
-		particle.startOpacity = 0.75;
+		particle.startOpacity = 0.24;
 		particle.endOpacity = 0.0;
 		particle.velocity.copy( _jitter );
-		particle.maxLife = 0.2 + Math.random() * 0.18;
+		particle.maxLife = 0.24 + Math.random() * 0.22;
 		particle.life = particle.maxLife;
 		particle.damping = 1.8;
 		particle.gravity = 6.5;
 		particle.alphaMode = 'fade';
+
+	}
+
+	emitSplashBurst( point, normal, hit = false ) {
+
+		const count = hit ? 6 : 4;
+
+		for ( let i = 0; i < count; i ++ ) {
+
+			this.emitSplashParticle( point, normal );
+
+		}
 
 	}
 

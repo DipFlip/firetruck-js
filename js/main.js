@@ -10,6 +10,7 @@ import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, cr
 import { Effects } from './Particles.js';
 import { GameAudio } from './Audio.js';
 import { FireTargetSystem } from './FireTargets.js';
+import { ScorePopupSystem } from './ScorePopups.js';
 
 
 const renderer = new THREE.WebGLRenderer( { antialias: true, outputBufferType: THREE.HalfFloatType } );
@@ -50,6 +51,13 @@ const WATER_SPEED = 12;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
+const FIRE_EXTINGUISH_SCORE = 10;
+const INITIAL_FIRE_COUNT = 3;
+const MAX_ACTIVE_FIRES = 4;
+const FIRE_SPAWN_INTERVAL = 5.5;
+const FIRE_SPAWN_MIN_DISTANCE = 9;
+const FIRE_SPAWN_NEAR_DISTANCE = 22;
+const FIRE_SPAWN_FALLBACK_DISTANCE = 34;
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
 debugUi.style.left = '16px';
@@ -78,6 +86,8 @@ statusUi.style.top = '16px';
 statusUi.style.padding = '10px 12px';
 statusUi.style.color = '#fff';
 statusUi.style.font = '13px sans-serif';
+statusUi.style.lineHeight = '1.45';
+statusUi.style.whiteSpace = 'pre-line';
 statusUi.style.background = 'rgba(0, 0, 0, 0.5)';
 statusUi.style.borderRadius = '6px';
 statusUi.style.zIndex = '10';
@@ -144,11 +154,85 @@ const fireTrackWorld = new THREE.Vector3();
 const waterArcStart = new THREE.Vector3();
 const waterArcEnd = new THREE.Vector3();
 const waterArcVelocity = new THREE.Vector3();
+const waterLaunchVelocity = new THREE.Vector3();
+const pendingWaterImpacts = [];
+const _fireSeparation = new THREE.Vector2();
+const _fireSpawnOffset = new THREE.Vector2();
 
-function computeFallbackWaterImpact( origin, direction, maxRange ) {
+function shuffleInPlace( values ) {
+
+	for ( let i = values.length - 1; i > 0; i -- ) {
+
+		const j = Math.floor( Math.random() * ( i + 1 ) );
+		[ values[ i ], values[ j ] ] = [ values[ j ], values[ i ] ];
+
+	}
+
+	return values;
+
+}
+
+function addFireSpawnCandidate( candidates, position, minDistance = 6.25 ) {
+
+	for ( const candidate of candidates ) {
+
+		_fireSeparation.set( candidate.x - position.x, candidate.z - position.z );
+		if ( _fireSeparation.length() < minDistance ) return false;
+
+	}
+
+	candidates.push( {
+		x: position.x,
+		y: position.y ?? 0,
+		z: position.z,
+		fireAmount: position.fireAmount ?? 1,
+		rotationY: position.rotationY ?? 0,
+	} );
+	return true;
+
+}
+
+function takeNearbyFireSpawn( candidates, playerPosition ) {
+
+	if ( candidates.length === 0 ) return null;
+
+	const validCandidates = [];
+
+	for ( let i = 0; i < candidates.length; i ++ ) {
+
+		const candidate = candidates[ i ];
+		_fireSpawnOffset.set( candidate.x - playerPosition.x, candidate.z - playerPosition.z );
+		const distance = _fireSpawnOffset.length();
+		if ( distance < FIRE_SPAWN_MIN_DISTANCE ) continue;
+
+		validCandidates.push( {
+			index: i,
+			distance,
+		} );
+
+	}
+
+	if ( validCandidates.length === 0 ) return null;
+
+	validCandidates.sort( ( a, b ) => a.distance - b.distance );
+
+	const nearbyPool = validCandidates.filter( ( candidate ) => candidate.distance <= FIRE_SPAWN_NEAR_DISTANCE );
+	const fallbackPool = validCandidates.filter( ( candidate ) => candidate.distance <= FIRE_SPAWN_FALLBACK_DISTANCE );
+	const selectionPool = nearbyPool.length > 0
+		? nearbyPool.slice( 0, Math.min( nearbyPool.length, 6 ) )
+		: fallbackPool.length > 0
+			? fallbackPool.slice( 0, Math.min( fallbackPool.length, 6 ) )
+			: validCandidates.slice( 0, Math.min( validCandidates.length, 4 ) );
+
+	const choice = selectionPool[ Math.floor( Math.random() * selectionPool.length ) ];
+	return candidates.splice( choice.index, 1 )[ 0 ] ?? null;
+
+}
+
+function computeFallbackWaterImpact( origin, launchVelocity, maxRange ) {
 
 	waterArcStart.copy( origin );
-	waterArcVelocity.copy( direction ).multiplyScalar( WATER_SPEED );
+	waterArcVelocity.copy( launchVelocity );
 	let travelled = 0;
 
 	for ( let i = 0; i < WATER_SEGMENT_COUNT; i ++ ) {
@@ -191,7 +275,7 @@ function computeFallbackWaterImpact( origin, direction, maxRange ) {
 
 }
 
-function selectFireTargetPositions( customCells, bounds, spawn ) {
+function buildFireSpawnPositions( customCells, bounds, spawn ) {
 
 	const placements = getDecorationPlacements( customCells )
 		.filter( ( placement ) => placement.key !== 'decoration-forest' )
@@ -220,7 +304,7 @@ function selectFireTargetPositions( customCells, bounds, spawn ) {
 		[ - 1, 1 ],
 		[ 1, 1 ],
 	];
-	const selected = [];
+	const candidates = [];
 	const rampPlacement = getTrackPiecePlacements( customCells ).find( ( placement ) => placement.key === 'ramp' );
 
 	if ( rampPlacement ) {
@@ -233,21 +317,21 @@ function selectFireTargetPositions( customCells, bounds, spawn ) {
 			rampPlacement.z * GRID_SCALE
 		).addScaledVector( fireTrackOffset, GRID_SCALE );
 
-		selected.push( {
+		addFireSpawnCandidate( candidates, {
 			x: fireTrackWorld.x,
 			y: fireTrackWorld.y,
 			z: fireTrackWorld.z,
 			fireAmount: 1,
-		} );
+		}, 0 );
 
 	} else if ( spawn ) {
 
-		selected.push( {
+		addFireSpawnCandidate( candidates, {
 			x: spawn.position[ 0 ] - 4.5,
 			y: 0,
 			z: spawn.position[ 2 ] + 4.5,
 			fireAmount: 1,
-		} );
+		}, 0 );
 
 	}
 
@@ -266,7 +350,7 @@ function selectFireTargetPositions( customCells, bounds, spawn ) {
 			const distCenter = Math.hypot( dx, dz );
 			const distSpawn = Math.hypot( placement.x - fireSpawnPoint.x, placement.z - fireSpawnPoint.y );
 			if ( distCenter < 10 || distSpawn < 12 ) continue;
-			if ( selected.some( ( target ) => Math.hypot( placement.x - target.x, placement.z - target.z ) < 7 ) ) continue;
+			if ( candidates.some( ( target ) => Math.hypot( placement.x - target.x, placement.z - target.z ) < 7 ) ) continue;
 
 			const score = distCenter + ( placement.key === 'decoration-tents' ? 2.5 : 0 );
 			if ( score <= bestScore ) continue;
@@ -276,11 +360,9 @@ function selectFireTargetPositions( customCells, bounds, spawn ) {
 
 		}
 
-		if ( best ) selected.push( best );
+		if ( best ) addFireSpawnCandidate( candidates, best, 7 );
 
 	}
-
-	if ( selected.length >= 3 ) return selected.slice( 0, 4 );
 
 	const fallbackOffsets = [
 		[ - 0.55, - 0.28 ],
@@ -296,13 +378,30 @@ function selectFireTargetPositions( customCells, bounds, spawn ) {
 
 	for ( const fallbackTarget of fallbackTargets ) {
 
-		if ( selected.length >= 4 ) break;
-		if ( selected.some( ( target ) => Math.hypot( fallbackTarget.x - target.x, fallbackTarget.z - target.z ) < 7 ) ) continue;
-		selected.push( fallbackTarget );
+		addFireSpawnCandidate( candidates, fallbackTarget, 7 );
 
 	}
 
-	return selected.slice( 0, 4 );
+	const extraCandidates = placements.filter( ( placement ) => {
+
+		const distCenter = Math.hypot( placement.x - fireTargetCenter.x, placement.z - fireTargetCenter.y );
+		const distSpawn = Math.hypot( placement.x - fireSpawnPoint.x, placement.z - fireSpawnPoint.y );
+		if ( distSpawn < 11 ) return false;
+		if ( distCenter < 8 ) return false;
+		if ( candidates.some( ( candidate ) => Math.hypot( placement.x - candidate.x, placement.z - candidate.z ) < 6.5 ) ) return false;
+		return true;
+
+	} );
+
+	shuffleInPlace( extraCandidates );
+
+	for ( const extraCandidate of extraCandidates ) {
+
+		addFireSpawnCandidate( candidates, extraCandidate, 6.5 );
+
+	}
+
+	return candidates;
 
 }
 
@@ -565,9 +664,12 @@ async function init() {
 	const controls = new Controls();
 
 	const effects = new Effects( scene );
-	const fireTargets = new FireTargetSystem( scene, effects, models.wood, selectFireTargetPositions( customCells, bounds, spawn ) );
+	const fireSpawnPositions = buildFireSpawnPositions( customCells, bounds, spawn );
+	const initialFireTargets = fireSpawnPositions.splice( 0, Math.min( INITIAL_FIRE_COUNT, fireSpawnPositions.length ) );
+	const fireTargets = new FireTargetSystem( scene, effects, models.wood, initialFireTargets );
 	fireTargets.setDebugVisible( debugSphereToggle.checked );
 	fireTargetSystem = fireTargets;
+	const scorePopups = new ScorePopupSystem( scene );
 
 	const audio = new GameAudio();
 	audio.init( cam.camera );
@@ -575,6 +677,8 @@ async function init() {
 	const _forward = new THREE.Vector3();
 	const _collisionQuat = new THREE.Quaternion();
 	let elapsedTime = 0;
+	let score = 0;
+	let fireSpawnTimer = 0;
 
 	function getCapsuleTiltNormal() {
 
@@ -865,26 +969,77 @@ async function init() {
 
 		if ( input.water ) {
 
-			const targetHit = fireTargets.spray( cannonState.origin, cannonState.direction, WATER_RANGE, dt );
-			const impact = targetHit || computeFallbackWaterImpact( cannonState.origin, cannonState.direction, WATER_RANGE );
+			waterLaunchVelocity.copy( cannonState.direction ).multiplyScalar( WATER_SPEED ).add( cannonState.vehicleVelocity );
+			vehicle.applyWaterRecoil( cannonState.direction, dt );
+			const targetHit = fireTargets.spray( cannonState.origin, waterLaunchVelocity, WATER_RANGE );
+			const impact = targetHit || computeFallbackWaterImpact( cannonState.origin, waterLaunchVelocity, WATER_RANGE );
+
+			pendingWaterImpacts.push( {
+				remainingTime: impact.travelTime,
+				hit: !! targetHit,
+				target: targetHit?.target ?? null,
+				impactPoint: impact.impactPoint.clone(),
+				impactNormal: impact.impactNormal.clone(),
+				damageAmount: dt * 0.45,
+			} );
 
 			waterState = {
 				active: true,
-				hit: !! targetHit,
 				origin: cannonState.origin,
 				direction: cannonState.direction,
-				impactPoint: impact.impactPoint,
-				impactNormal: impact.impactNormal,
-				travelTime: impact.travelTime,
+				velocity: waterLaunchVelocity.clone(),
 			};
+
+		}
+
+		for ( let i = pendingWaterImpacts.length - 1; i >= 0; i -- ) {
+
+			const impact = pendingWaterImpacts[ i ];
+			impact.remainingTime -= dt;
+			if ( impact.remainingTime > 0 ) continue;
+
+			if ( impact.hit && impact.target ) {
+
+				const result = fireTargets.applyImpact( impact.target, impact.damageAmount );
+
+				if ( result.extinguished ) {
+
+					score += FIRE_EXTINGUISH_SCORE;
+					scorePopups.spawn( result.position, `+${ FIRE_EXTINGUISH_SCORE }` );
+
+				}
+
+			}
+
+			effects.emitSplashBurst( impact.impactPoint, impact.impactNormal, impact.hit );
+			pendingWaterImpacts.splice( i, 1 );
+
+		}
+
+		if ( fireSpawnPositions.length > 0 && fireTargets.getActiveCount() < MAX_ACTIVE_FIRES ) {
+
+			fireSpawnTimer += dt;
+
+			if ( fireSpawnTimer >= FIRE_SPAWN_INTERVAL ) {
+
+				fireSpawnTimer = 0;
+				const nextFire = takeNearbyFireSpawn( fireSpawnPositions, vehicle.spherePos );
+				if ( nextFire ) fireTargets.addTarget( nextFire );
+
+			}
+
+		} else {
+
+			fireSpawnTimer = 0;
 
 		}
 
 		cam.update( dt, vehicle.spherePos );
 		fireTargets.update( dt, elapsedTime );
 		effects.update( dt, vehicle, waterState );
+		scorePopups.update( dt );
 		audio.update( dt, vehicle.linearSpeed, input.z, vehicle.driftIntensity );
-		statusUi.textContent = `Fires left: ${ fireTargets.getActiveCount() }  |  Drive: WASD  |  Water: Arrows`;
+		statusUi.textContent = `Score: ${ score }  |  Fires: ${ fireTargets.getActiveCount() }\nDrive: WASD  |  Water: Arrows`;
 
 		renderer.render( scene, cam.camera );
 
