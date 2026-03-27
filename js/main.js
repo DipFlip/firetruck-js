@@ -493,8 +493,8 @@ async function init() {
 
 		supportAverageNormal.normalize();
 
-		const frontCount = averageSupportPoint( supports, ( support ) => support.isFront, supportMidA );
-		const backCount = averageSupportPoint( supports, ( support ) => ! support.isFront, supportMidB );
+		const frontCount = averageSupportPoint( supports, ( support ) => support.axle === 'front', supportMidA );
+		const backCount = averageSupportPoint( supports, ( support ) => support.axle === 'back', supportMidB );
 		const leftCount = averageSupportPoint( supports, ( support ) => support.isLeft, groundProbeWorld );
 		const rightCount = averageSupportPoint( supports, ( support ) => ! support.isLeft, groundProbeOrigin );
 
@@ -566,6 +566,7 @@ async function init() {
 
 				wheelSupports.push( {
 					key: wheelProbe.key,
+					axle: wheelProbe.axle,
 					isFront: wheelProbe.isFront,
 					isLeft: wheelProbe.isLeft,
 					isSupported: false,
@@ -580,6 +581,7 @@ async function init() {
 			const isSupported = wheelToGround <= wheelProbe.maxDroop;
 			wheelSupports.push( {
 				key: wheelProbe.key,
+				axle: wheelProbe.axle,
 				isFront: wheelProbe.isFront,
 				isLeft: wheelProbe.isLeft,
 				isSupported,

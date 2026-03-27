@@ -53,8 +53,12 @@ export class Vehicle {
 		this.wheelStates = [];
 		this.wheelFL = null;
 		this.wheelFR = null;
+		this.wheelML = null;
+		this.wheelMR = null;
 		this.wheelBL = null;
 		this.wheelBR = null;
+		this.bodyRideHeightGrounded = 0.2;
+		this.bodyRideHeightAirborne = 0.3;
 
 		this.inputX = 0;
 		this.inputZ = 0;
@@ -79,6 +83,7 @@ export class Vehicle {
 			const name = child.name.toLowerCase();
 
 			if ( ! colliderNode && name.includes( 'collider' ) ) colliderNode = child;
+			if ( name.includes( 'driveball' ) ) child.visible = false;
 
 			if ( name === 'body' ) {
 
@@ -92,6 +97,8 @@ export class Vehicle {
 
 				if ( name.includes( 'front' ) && name.includes( 'left' ) ) this.wheelFL = child;
 				if ( name.includes( 'front' ) && name.includes( 'right' ) ) this.wheelFR = child;
+				if ( name.includes( 'middle' ) && name.includes( 'left' ) ) this.wheelML = child;
+				if ( name.includes( 'middle' ) && name.includes( 'right' ) ) this.wheelMR = child;
 				if ( name.includes( 'back' ) && name.includes( 'left' ) ) this.wheelBL = child;
 				if ( name.includes( 'back' ) && name.includes( 'right' ) ) this.wheelBR = child;
 
@@ -112,8 +119,17 @@ export class Vehicle {
 		this.container.updateMatrixWorld( true );
 		this.captureWheelState( 'frontLeft', this.wheelFL, true, true );
 		this.captureWheelState( 'frontRight', this.wheelFR, true, false );
-		this.captureWheelState( 'backLeft', this.wheelBL, false, true );
-		this.captureWheelState( 'backRight', this.wheelBR, false, false );
+		this.captureWheelState( 'middleLeft', this.wheelML, false, true, 'middle' );
+		this.captureWheelState( 'middleRight', this.wheelMR, false, false, 'middle' );
+		this.captureWheelState( 'backLeft', this.wheelBL, false, true, 'back' );
+		this.captureWheelState( 'backRight', this.wheelBR, false, false, 'back' );
+
+		if ( this.wheelML || this.wheelMR ) {
+
+			this.bodyRideHeightGrounded = 0.12;
+			this.bodyRideHeightAirborne = 0.22;
+
+		}
 
 		return this.container;
 
@@ -292,7 +308,7 @@ export class Vehicle {
 
 	}
 
-	captureWheelState( key, wheel, isFront, isLeft ) {
+	captureWheelState( key, wheel, isFront, isLeft, axle = isFront ? 'front' : 'back' ) {
 
 		if ( ! wheel ) return;
 
@@ -307,6 +323,7 @@ export class Vehicle {
 			node: wheel,
 			isFront,
 			isLeft,
+			axle,
 			radius,
 			restLocalPosition: localCenter.clone(),
 			restLocalY: wheel.position.y,
@@ -327,6 +344,7 @@ export class Vehicle {
 			key: state.key,
 			isFront: state.isFront,
 			isLeft: state.isLeft,
+			axle: state.axle,
 			radius: state.radius,
 			maxCompression: state.maxCompression,
 			maxDroop: state.maxDroop,
@@ -351,7 +369,11 @@ export class Vehicle {
 			dt * 5
 		);
 
-		this.bodyNode.position.y = THREE.MathUtils.lerp( this.bodyNode.position.y, this.isGrounded ? 0.2 : 0.3, dt * 5 );
+		this.bodyNode.position.y = THREE.MathUtils.lerp(
+			this.bodyNode.position.y,
+			this.isGrounded ? this.bodyRideHeightGrounded : this.bodyRideHeightAirborne,
+			dt * 5
+		);
 
 	}
 
@@ -386,7 +408,7 @@ export class Vehicle {
 				THREE.MathUtils.clamp( dt * ( support?.isSupported ? 18 : 8 ), 0, 1 )
 			);
 
-			const targetSteer = state.isFront ? -this.inputX / 1.5 : state.restRotationY;
+			const targetSteer = state.axle === 'front' ? -this.inputX / 1.5 : state.restRotationY;
 			wheel.rotation.y = lerpAngle( wheel.rotation.y, targetSteer, dt * 10 );
 
 		}
