@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { rigidBody } from 'crashcat';
 
 const _tmpVec = new THREE.Vector3();
+const _tmpVecB = new THREE.Vector3();
+const _tmpVecC = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _worldUp = new THREE.Vector3( 0, 1, 0 );
@@ -48,6 +50,7 @@ export class Vehicle {
 		this.container = new THREE.Group();
 		this.bodyNode = null;
 		this.wheels = [];
+		this.wheelStates = [];
 		this.wheelFL = null;
 		this.wheelFR = null;
 		this.wheelBL = null;
@@ -59,6 +62,7 @@ export class Vehicle {
 		this.driftIntensity = 0;
 		this.isGrounded = false;
 		this.justReset = false;
+		this.visualSupportCount = 0;
 
 	}
 
@@ -104,6 +108,13 @@ export class Vehicle {
 
 		if ( colliderNode ) colliderNode.visible = false;
 
+		vehicleModel.updateMatrixWorld( true );
+		this.container.updateMatrixWorld( true );
+		this.captureWheelState( 'frontLeft', this.wheelFL, true, true );
+		this.captureWheelState( 'frontRight', this.wheelFR, true, false );
+		this.captureWheelState( 'backLeft', this.wheelBL, false, true );
+		this.captureWheelState( 'backRight', this.wheelBR, false, false );
+
 		return this.container;
 
 	}
@@ -138,6 +149,8 @@ export class Vehicle {
 		const isGrounded = !! groundState?.isGrounded &&
 			Math.abs( this.sphereVel.y ) <= GROUNDED_VERTICAL_SPEED;
 		this.isGrounded = isGrounded;
+		const hasVisualSupport = !! groundState?.supports?.some( ( support ) => support.isSupported );
+		this.visualSupportCount = hasVisualSupport ? groundState.supports.filter( ( support ) => support.isSupported ).length : 0;
 
 		if ( controlsInput.jump && isGrounded && this.rigidBody ) {
 
@@ -161,7 +174,7 @@ export class Vehicle {
 
 		this.heading += this.angularSpeed * dt;
 
-		const targetUp = isGrounded ? this.normal : _worldUp;
+		const targetUp = ( isGrounded || hasVisualSupport ) && groundState?.normal ? this.normal : _worldUp;
 		_yawQuat.setFromAxisAngle( _worldUp, this.heading );
 		const targetQuat = this.alignWithY( _yawQuat, targetUp );
 		this.container.quaternion.slerp( targetQuat, THREE.MathUtils.clamp( dt * ( isGrounded ? 10 : 4 ), 0, 1 ) );
@@ -240,11 +253,8 @@ export class Vehicle {
 
 		}
 
-		this.container.position.set(
-			this.spherePos.x,
-			this.spherePos.y - VEHICLE_SPHERE_RADIUS,
-			this.spherePos.z
-		);
+		const visualUp = _tmpVecB.set( 0, 1, 0 ).applyQuaternion( this.container.quaternion ).normalize();
+		this.container.position.copy( this.spherePos ).addScaledVector( visualUp, - VEHICLE_SPHERE_RADIUS );
 
 		if ( dt > 0 ) {
 
@@ -253,8 +263,9 @@ export class Vehicle {
 
 		}
 
+		this.container.updateMatrixWorld( true );
 		this.updateBody( dt );
-		this.updateWheels( dt );
+		this.updateWheels( dt, groundState?.supports ?? null );
 
 		this.driftIntensity = Math.abs( this.linearSpeed - this.acceleration ) +
 			( this.bodyNode ? Math.abs( this.bodyNode.rotation.z ) * 2 : 0 );
@@ -281,6 +292,49 @@ export class Vehicle {
 
 	}
 
+	captureWheelState( key, wheel, isFront, isLeft ) {
+
+		if ( ! wheel ) return;
+
+		const bounds = new THREE.Box3().setFromObject( wheel );
+		const size = new THREE.Vector3();
+		bounds.getSize( size );
+		const localCenter = this.container.worldToLocal( wheel.getWorldPosition( new THREE.Vector3() ) );
+		const radius = Math.max( Math.max( size.y, size.z ) * 0.5, 0.12 );
+
+		this.wheelStates.push( {
+			key,
+			node: wheel,
+			isFront,
+			isLeft,
+			radius,
+			restLocalPosition: localCenter.clone(),
+			restLocalY: wheel.position.y,
+			restRotationY: wheel.rotation.y,
+			maxCompression: Math.max( radius * 0.6, 0.12 ),
+			maxDroop: Math.max( radius * 0.9, 0.2 ),
+		} );
+
+	}
+
+	getWheelProbePoints() {
+
+		if ( this.wheelStates.length === 0 ) return [];
+
+		this.container.updateMatrixWorld( true );
+
+		return this.wheelStates.map( ( state ) => ( {
+			key: state.key,
+			isFront: state.isFront,
+			isLeft: state.isLeft,
+			radius: state.radius,
+			maxCompression: state.maxCompression,
+			maxDroop: state.maxDroop,
+			worldCenter: state.restLocalPosition.clone().applyMatrix4( this.container.matrixWorld ),
+		} ) );
+
+	}
+
 	updateBody( dt ) {
 
 		if ( ! this.bodyNode ) return;
@@ -301,23 +355,39 @@ export class Vehicle {
 
 	}
 
-	updateWheels( dt ) {
+	updateWheels( dt, supports = null ) {
 
-		for ( const wheel of this.wheels ) {
+		const supportMap = supports ? new Map( supports.map( ( support ) => [ support.key, support ] ) ) : null;
+		const visualUp = _tmpVecB.set( 0, 1, 0 ).applyQuaternion( this.container.quaternion ).normalize();
 
+		for ( const state of this.wheelStates ) {
+
+			const wheel = state.node;
 			wheel.rotation.x += this.acceleration;
 
-		}
+			let targetY = state.restLocalY + state.maxDroop;
+			const support = supportMap?.get( state.key );
 
-		if ( this.wheelFL ) {
+			if ( support?.isSupported ) {
 
-			this.wheelFL.rotation.y = lerpAngle( this.wheelFL.rotation.y, -this.inputX / 1.5, dt * 10 );
+				_tmpVecC.copy( support.contactPoint ).addScaledVector( visualUp, state.radius );
+				this.container.worldToLocal( _tmpVecC );
+				targetY = THREE.MathUtils.clamp(
+					_tmpVecC.y,
+					state.restLocalY - state.maxCompression,
+					state.restLocalY + state.maxDroop
+				);
 
-		}
+			}
 
-		if ( this.wheelFR ) {
+			wheel.position.y = THREE.MathUtils.lerp(
+				wheel.position.y,
+				targetY,
+				THREE.MathUtils.clamp( dt * ( support?.isSupported ? 18 : 8 ), 0, 1 )
+			);
 
-			this.wheelFR.rotation.y = lerpAngle( this.wheelFR.rotation.y, -this.inputX / 1.5, dt * 10 );
+			const targetSteer = state.isFront ? -this.inputX / 1.5 : state.restRotationY;
+			wheel.rotation.y = lerpAngle( wheel.rotation.y, targetSteer, dt * 10 );
 
 		}
 

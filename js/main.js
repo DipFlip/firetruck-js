@@ -90,6 +90,12 @@ const groundProbeNormal = new THREE.Vector3();
 const groundProbeForward = new THREE.Vector3();
 const groundProbeRight = new THREE.Vector3();
 const groundHitNormal = new THREE.Vector3();
+const supportForward = new THREE.Vector3();
+const supportLateral = new THREE.Vector3();
+const supportPlaneNormal = new THREE.Vector3();
+const supportAverageNormal = new THREE.Vector3();
+const supportMidA = new THREE.Vector3();
+const supportMidB = new THREE.Vector3();
 const capsuleVisualQuat = new THREE.Quaternion();
 const capsuleTargetVisualQuat = new THREE.Quaternion();
 const capsuleUp = new THREE.Vector3();
@@ -412,6 +418,101 @@ async function init() {
 
 	}
 
+	function castGroundProbeAt( worldPoint ) {
+
+		groundProbeOrigin.copy( worldPoint );
+		groundProbeOrigin.y += GROUND_PROBE_START_HEIGHT;
+
+		groundProbeOriginArray[ 0 ] = groundProbeOrigin.x;
+		groundProbeOriginArray[ 1 ] = groundProbeOrigin.y;
+		groundProbeOriginArray[ 2 ] = groundProbeOrigin.z;
+		groundProbeCollector.reset();
+		castShape(
+			world,
+			groundProbeCollector,
+			groundProbeSettings,
+			groundProbeShape,
+			groundProbeOriginArray,
+			groundProbeQuatArray,
+			groundProbeScaleArray,
+			groundProbeDisplacementArray,
+			groundProbeFilter
+		);
+
+		const hit = groundProbeCollector.hit;
+		if ( hit.status !== CastShapeStatus.COLLIDING ) return null;
+
+		const supportY = hit.pointB[ 1 ];
+		const distanceToSurface = worldPoint.y - supportY;
+		if ( distanceToSurface < - GROUND_SURFACE_OVERLAP_TOLERANCE ) return null;
+
+		return {
+			point: new THREE.Vector3( hit.pointB[ 0 ], hit.pointB[ 1 ], hit.pointB[ 2 ] ),
+			normal: new THREE.Vector3().fromArray( hit.normal ).normalize(),
+			distanceToSurface,
+		};
+
+	}
+
+	function averageSupportPoint( supports, predicate, target ) {
+
+		target.set( 0, 0, 0 );
+		let count = 0;
+
+		for ( const support of supports ) {
+
+			if ( ! support.isSupported || ! predicate( support ) ) continue;
+			target.add( support.contactPoint );
+			count ++;
+
+		}
+
+		if ( count > 0 ) target.multiplyScalar( 1 / count );
+		return count;
+
+	}
+
+	function computeSupportRigNormal( supports ) {
+
+		supportAverageNormal.set( 0, 0, 0 );
+		let supportedCount = 0;
+
+		for ( const support of supports ) {
+
+			if ( ! support.isSupported ) continue;
+			supportAverageNormal.add( support.normal );
+			supportedCount ++;
+
+		}
+
+		if ( supportedCount === 0 ) return null;
+
+		supportAverageNormal.normalize();
+
+		const frontCount = averageSupportPoint( supports, ( support ) => support.isFront, supportMidA );
+		const backCount = averageSupportPoint( supports, ( support ) => ! support.isFront, supportMidB );
+		const leftCount = averageSupportPoint( supports, ( support ) => support.isLeft, groundProbeWorld );
+		const rightCount = averageSupportPoint( supports, ( support ) => ! support.isLeft, groundProbeOrigin );
+
+		if ( frontCount > 0 && backCount > 0 && leftCount > 0 && rightCount > 0 ) {
+
+			supportForward.subVectors( supportMidA, supportMidB );
+			supportLateral.subVectors( groundProbeOrigin, groundProbeWorld );
+
+			if ( supportForward.lengthSq() > 1e-5 && supportLateral.lengthSq() > 1e-5 ) {
+
+				supportPlaneNormal.crossVectors( supportLateral, supportForward ).normalize();
+				if ( supportPlaneNormal.y < 0 ) supportPlaneNormal.negate();
+				return supportPlaneNormal.lerp( supportAverageNormal, 0.35 ).normalize().clone();
+
+			}
+
+		}
+
+		return supportAverageNormal.clone();
+
+	}
+
 	function sampleGroundState() {
 
 		const heading = vehicle.heading;
@@ -437,55 +538,61 @@ async function init() {
 			groundProbeWorld.copy( groundProbeBase )
 				.addScaledVector( groundProbeRight, offsetX )
 				.addScaledVector( groundProbeForward, offsetZ );
-			groundProbeOrigin.copy( groundProbeWorld );
-			groundProbeOrigin.y += GROUND_PROBE_START_HEIGHT;
+			const hit = castGroundProbeAt( groundProbeWorld );
+			if ( ! hit ) continue;
 
-			groundProbeOriginArray[ 0 ] = groundProbeOrigin.x;
-			groundProbeOriginArray[ 1 ] = groundProbeOrigin.y;
-			groundProbeOriginArray[ 2 ] = groundProbeOrigin.z;
-			groundProbeCollector.reset();
-			castShape(
-				world,
-				groundProbeCollector,
-				groundProbeSettings,
-				groundProbeShape,
-				groundProbeOriginArray,
-				groundProbeQuatArray,
-				groundProbeScaleArray,
-				groundProbeDisplacementArray,
-				groundProbeFilter
-			);
-
-			const hit = groundProbeCollector.hit;
-			if ( hit.status !== CastShapeStatus.COLLIDING ) continue;
-
-			const supportY = hit.pointB[ 1 ];
-			const distanceToSurface = groundProbeBase.y - supportY;
-			if ( distanceToSurface < - GROUND_SURFACE_OVERLAP_TOLERANCE ) continue;
+			const distanceToSurface = hit.distanceToSurface;
 
 			closestDistance = Math.min( closestDistance, Math.max( distanceToSurface, 0 ) );
 
 			if ( distanceToSurface <= GROUND_CONTACT_DISTANCE ) {
 
-				groundProbeNormal.add( groundHitNormal.fromArray( hit.normal ).normalize() );
+				groundProbeNormal.add( hit.normal );
 				hitCount ++;
 
 			}
 
 		}
 
-		if ( hitCount === 0 ) {
+		const wheelSupports = [];
+		for ( const wheelProbe of vehicle.getWheelProbePoints() ) {
 
-			return { isGrounded: false, normal: null };
+			const hit = castGroundProbeAt( wheelProbe.worldCenter );
+			if ( ! hit ) {
+
+				wheelSupports.push( {
+					key: wheelProbe.key,
+					isFront: wheelProbe.isFront,
+					isLeft: wheelProbe.isLeft,
+					isSupported: false,
+					contactPoint: null,
+					normal: null,
+				} );
+				continue;
+
+			}
+
+			const wheelToGround = wheelProbe.worldCenter.y - hit.point.y - wheelProbe.radius;
+			const isSupported = wheelToGround <= wheelProbe.maxDroop;
+			wheelSupports.push( {
+				key: wheelProbe.key,
+				isFront: wheelProbe.isFront,
+				isLeft: wheelProbe.isLeft,
+				isSupported,
+				contactPoint: isSupported ? hit.point.clone() : null,
+				normal: isSupported ? hit.normal.clone() : null,
+			} );
 
 		}
 
-		groundProbeNormal.normalize();
+		if ( hitCount > 0 ) groundProbeNormal.normalize();
+		const rigNormal = computeSupportRigNormal( wheelSupports ) ?? ( hitCount > 0 ? groundProbeNormal.clone() : null );
 
 		return {
 			isGrounded: closestDistance <= GROUND_CONTACT_DISTANCE,
-			normal: getCapsuleTiltNormal().clone(),
-			supportNormal: groundProbeNormal.clone(),
+			normal: rigNormal ?? getCapsuleTiltNormal().clone(),
+			supportNormal: hitCount > 0 ? groundProbeNormal.clone() : null,
+			supports: wheelSupports,
 		};
 
 	}
