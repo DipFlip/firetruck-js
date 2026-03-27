@@ -5,10 +5,11 @@ import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, e
 import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
-import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds } from './Track.js';
+import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, getDecorationPlacements, getTrackPiecePlacements, CELL_RAW, GRID_SCALE } from './Track.js';
 import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, createDecorationColliderSystem, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
-import { SmokeTrails } from './Particles.js';
+import { Effects } from './Particles.js';
 import { GameAudio } from './Audio.js';
+import { FireTargetSystem } from './FireTargets.js';
 
 
 const renderer = new THREE.WebGLRenderer( { antialias: true, outputBufferType: THREE.HalfFloatType } );
@@ -43,6 +44,12 @@ const GROUND_PROBE_RAY_FAR = 4.5;
 const GROUND_CONTACT_DISTANCE = 0.75;
 const GROUND_PROBE_RADIUS = 0.05;
 const GROUND_SURFACE_OVERLAP_TOLERANCE = 0.12;
+const WATER_RANGE = 26;
+const WATER_GROUND_Y = 0.05;
+const WATER_SPEED = 12;
+const WATER_GRAVITY = 18;
+const WATER_SEGMENT_DT = 0.06;
+const WATER_SEGMENT_COUNT = 20;
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
 debugUi.style.left = '16px';
@@ -63,6 +70,19 @@ debugSphereToggle.type = 'checkbox';
 debugUi.appendChild( debugSphereToggle );
 debugUi.appendChild( document.createTextNode( 'Debug' ) );
 document.body.appendChild( debugUi );
+
+const statusUi = document.createElement( 'div' );
+statusUi.style.position = 'absolute';
+statusUi.style.left = '16px';
+statusUi.style.top = '16px';
+statusUi.style.padding = '10px 12px';
+statusUi.style.color = '#fff';
+statusUi.style.font = '13px sans-serif';
+statusUi.style.background = 'rgba(0, 0, 0, 0.5)';
+statusUi.style.borderRadius = '6px';
+statusUi.style.zIndex = '10';
+statusUi.style.userSelect = 'none';
+document.body.appendChild( statusUi );
 
 const debugSphere = new THREE.Mesh(
 	new THREE.SphereGeometry( 0.5, 20, 12 ),
@@ -113,7 +133,178 @@ const debugProbeBox = new THREE.Mesh(
 debugProbeBox.visible = false;
 scene.add( debugProbeBox );
 let playerVehicleGroup = null;
+let fireTargetSystem = null;
 const rampVisualPieces = [];
+const fireTargetCenter = new THREE.Vector2();
+const fireSpawnPoint = new THREE.Vector2();
+const fireImpactPoint = new THREE.Vector3();
+const fireImpactNormal = new THREE.Vector3( 0, 1, 0 );
+const fireTrackOffset = new THREE.Vector3();
+const fireTrackWorld = new THREE.Vector3();
+const waterArcStart = new THREE.Vector3();
+const waterArcEnd = new THREE.Vector3();
+const waterArcVelocity = new THREE.Vector3();
+
+function computeFallbackWaterImpact( origin, direction, maxRange ) {
+
+	waterArcStart.copy( origin );
+	waterArcVelocity.copy( direction ).multiplyScalar( WATER_SPEED );
+	let travelled = 0;
+
+	for ( let i = 0; i < WATER_SEGMENT_COUNT; i ++ ) {
+
+		waterArcEnd.copy( waterArcStart ).addScaledVector( waterArcVelocity, WATER_SEGMENT_DT );
+		travelled += waterArcStart.distanceTo( waterArcEnd );
+		if ( travelled > maxRange ) break;
+
+		if ( waterArcEnd.y <= WATER_GROUND_Y ) {
+
+			fireImpactPoint.copy( waterArcEnd );
+			fireImpactPoint.y = WATER_GROUND_Y;
+			fireImpactNormal.set( 0, 1, 0 );
+
+			return {
+				hit: false,
+				impactPoint: fireImpactPoint.clone(),
+				impactNormal: fireImpactNormal.clone(),
+				distance: origin.distanceTo( fireImpactPoint ),
+				travelTime: i * WATER_SEGMENT_DT + waterArcStart.distanceTo( fireImpactPoint ) / Math.max( waterArcVelocity.length(), 1e-4 ),
+			};
+
+		}
+
+		waterArcStart.copy( waterArcEnd );
+		waterArcVelocity.y -= WATER_GRAVITY * WATER_SEGMENT_DT;
+
+	}
+
+	fireImpactPoint.copy( waterArcStart );
+	fireImpactNormal.set( 0, 1, 0 );
+
+	return {
+		hit: false,
+		impactPoint: fireImpactPoint.clone(),
+		impactNormal: fireImpactNormal.clone(),
+		distance,
+		travelTime: WATER_SEGMENT_COUNT * WATER_SEGMENT_DT,
+	};
+
+}
+
+function selectFireTargetPositions( customCells, bounds, spawn ) {
+
+	const placements = getDecorationPlacements( customCells )
+		.filter( ( placement ) => placement.key !== 'decoration-forest' )
+		.map( ( placement ) => ( {
+			x: placement.x * GRID_SCALE,
+			y: 0,
+			z: placement.z * GRID_SCALE,
+			key: placement.key,
+		} ) );
+
+	fireTargetCenter.set( bounds.centerX, bounds.centerZ );
+
+	if ( spawn ) {
+
+		fireSpawnPoint.set( spawn.position[ 0 ], spawn.position[ 2 ] );
+
+	} else {
+
+		fireSpawnPoint.set( bounds.centerX, bounds.centerZ );
+
+	}
+
+	const quadrants = [
+		[ - 1, - 1 ],
+		[ 1, - 1 ],
+		[ - 1, 1 ],
+		[ 1, 1 ],
+	];
+	const selected = [];
+	const rampPlacement = getTrackPiecePlacements( customCells ).find( ( placement ) => placement.key === 'ramp' );
+
+	if ( rampPlacement ) {
+
+		fireTrackOffset.set( - CELL_RAW * 0.48, 0, - CELL_RAW * 0.2 );
+		fireTrackOffset.applyAxisAngle( new THREE.Vector3( 0, 1, 0 ), rampPlacement.rotationY );
+		fireTrackWorld.set(
+			rampPlacement.x * GRID_SCALE,
+			rampPlacement.y * GRID_SCALE - 0.5,
+			rampPlacement.z * GRID_SCALE
+		).addScaledVector( fireTrackOffset, GRID_SCALE );
+
+		selected.push( {
+			x: fireTrackWorld.x,
+			y: fireTrackWorld.y,
+			z: fireTrackWorld.z,
+			fireAmount: 1,
+		} );
+
+	} else if ( spawn ) {
+
+		selected.push( {
+			x: spawn.position[ 0 ] - 4.5,
+			y: 0,
+			z: spawn.position[ 2 ] + 4.5,
+			fireAmount: 1,
+		} );
+
+	}
+
+	for ( const [ signX, signZ ] of quadrants ) {
+
+		let best = null;
+		let bestScore = - Infinity;
+
+		for ( const placement of placements ) {
+
+			const dx = placement.x - fireTargetCenter.x;
+			const dz = placement.z - fireTargetCenter.y;
+			if ( Math.sign( dx || signX ) !== signX ) continue;
+			if ( Math.sign( dz || signZ ) !== signZ ) continue;
+
+			const distCenter = Math.hypot( dx, dz );
+			const distSpawn = Math.hypot( placement.x - fireSpawnPoint.x, placement.z - fireSpawnPoint.y );
+			if ( distCenter < 10 || distSpawn < 12 ) continue;
+			if ( selected.some( ( target ) => Math.hypot( placement.x - target.x, placement.z - target.z ) < 7 ) ) continue;
+
+			const score = distCenter + ( placement.key === 'decoration-tents' ? 2.5 : 0 );
+			if ( score <= bestScore ) continue;
+
+			best = placement;
+			bestScore = score;
+
+		}
+
+		if ( best ) selected.push( best );
+
+	}
+
+	if ( selected.length >= 3 ) return selected.slice( 0, 4 );
+
+	const fallbackOffsets = [
+		[ - 0.55, - 0.28 ],
+		[ 0.48, - 0.46 ],
+		[ - 0.22, 0.5 ],
+		[ 0.52, 0.22 ],
+	];
+	const fallbackTargets = fallbackOffsets.map( ( [ ox, oz ] ) => ( {
+		x: bounds.centerX + bounds.halfWidth * ox,
+		y: 0,
+		z: bounds.centerZ + bounds.halfDepth * oz,
+	} ) );
+
+	for ( const fallbackTarget of fallbackTargets ) {
+
+		if ( selected.length >= 4 ) break;
+		if ( selected.some( ( target ) => Math.hypot( fallbackTarget.x - target.x, fallbackTarget.z - target.z ) < 7 ) ) continue;
+		selected.push( fallbackTarget );
+
+	}
+
+	return selected.slice( 0, 4 );
+
+}
 
 debugSphereToggle.addEventListener( 'change', () => {
 
@@ -127,6 +318,8 @@ debugSphereToggle.addEventListener( 'change', () => {
 		rampPiece.visible = ! debugSphereToggle.checked;
 
 	}
+
+	fireTargetSystem?.setDebugVisible( debugSphereToggle.checked );
 
 } );
 
@@ -158,7 +351,7 @@ const modelNames = [
 	PLAYER_VEHICLE_MODEL,
 	'vehicle-truck-yellow', 'vehicle-truck-green', 'vehicle-truck-purple', 'vehicle-truck-red',
 	'track-straight', 'track-corner', 'track-bump', 'track-finish', 'ramp',
-	'decoration-empty', 'decoration-forest', 'decoration-tents',
+	'decoration-empty', 'decoration-forest', 'decoration-tents', 'wood',
 ];
 
 const models = {};
@@ -371,13 +564,17 @@ async function init() {
 
 	const controls = new Controls();
 
-	const particles = new SmokeTrails( scene );
+	const effects = new Effects( scene );
+	const fireTargets = new FireTargetSystem( scene, effects, models.wood, selectFireTargetPositions( customCells, bounds, spawn ) );
+	fireTargets.setDebugVisible( debugSphereToggle.checked );
+	fireTargetSystem = fireTargets;
 
 	const audio = new GameAudio();
 	audio.init( cam.camera );
 
 	const _forward = new THREE.Vector3();
 	const _collisionQuat = new THREE.Quaternion();
+	let elapsedTime = 0;
 
 	function getCapsuleTiltNormal() {
 
@@ -612,6 +809,7 @@ async function init() {
 
 		timer.update();
 		const dt = Math.min( timer.getDelta(), 1 / 30 );
+		elapsedTime += dt;
 
 		const input = controls.update();
 
@@ -662,9 +860,31 @@ async function init() {
 			vehicle.spherePos.z - 5.3
 		);
 
+		const cannonState = vehicle.getCannonState();
+		let waterState = null;
+
+		if ( input.water ) {
+
+			const targetHit = fireTargets.spray( cannonState.origin, cannonState.direction, WATER_RANGE, dt );
+			const impact = targetHit || computeFallbackWaterImpact( cannonState.origin, cannonState.direction, WATER_RANGE );
+
+			waterState = {
+				active: true,
+				hit: !! targetHit,
+				origin: cannonState.origin,
+				direction: cannonState.direction,
+				impactPoint: impact.impactPoint,
+				impactNormal: impact.impactNormal,
+				travelTime: impact.travelTime,
+			};
+
+		}
+
 		cam.update( dt, vehicle.spherePos );
-		particles.update( dt, vehicle );
+		fireTargets.update( dt, elapsedTime );
+		effects.update( dt, vehicle, waterState );
 		audio.update( dt, vehicle.linearSpeed, input.z, vehicle.driftIntensity );
+		statusUi.textContent = `Fires left: ${ fireTargets.getActiveCount() }  |  Drive: WASD  |  Water: Arrows`;
 
 		renderer.render( scene, cam.camera );
 

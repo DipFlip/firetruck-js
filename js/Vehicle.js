@@ -8,6 +8,11 @@ const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _worldUp = new THREE.Vector3( 0, 1, 0 );
 const _yawQuat = new THREE.Quaternion();
+const _tmpQuat = new THREE.Quaternion();
+const _tmpScale = new THREE.Vector3();
+const _sprayPlanar = new THREE.Vector3();
+const _vehicleForward = new THREE.Vector3();
+const _vehicleRight = new THREE.Vector3();
 
 const SPEED_SCALE = 12.5;
 const LINEAR_DAMP = 0.1;
@@ -15,6 +20,7 @@ const JUMP_SPEED = 5.5;
 const VEHICLE_SPHERE_RADIUS = 0.5;
 const GROUNDED_VERTICAL_SPEED = 1.5;
 const AIR_CONTROL_FACTOR = 0.35;
+const CANNON_ELEVATION = 0.08;
 
 function lerpAngle( a, b, t ) {
 
@@ -68,6 +74,11 @@ export class Vehicle {
 		this.isGrounded = false;
 		this.justReset = false;
 		this.visualSupportCount = 0;
+		this.cannonYawPivot = new THREE.Object3D();
+		this.cannonPitchPivot = new THREE.Object3D();
+		this.cannonMuzzle = new THREE.Object3D();
+		this.cannonOrigin = new THREE.Vector3();
+		this.cannonDirection = new THREE.Vector3( 0, 0, 1 );
 
 	}
 
@@ -133,6 +144,8 @@ export class Vehicle {
 
 		}
 
+		this.setupCannonAnchor();
+
 		return this.container;
 
 	}
@@ -151,8 +164,8 @@ export class Vehicle {
 
 		}
 
-		this.inputX = controlsInput.x;
-		this.inputZ = controlsInput.z;
+		this.inputX = controlsInput.driveX ?? controlsInput.x;
+		this.inputZ = controlsInput.driveZ ?? controlsInput.z;
 
 		if ( groundState?.normal ) {
 
@@ -284,6 +297,7 @@ export class Vehicle {
 		this.container.updateMatrixWorld( true );
 		this.updateBody( dt );
 		this.updateWheels( dt, groundState?.supports ?? null );
+		this.updateCannon( dt, controlsInput );
 
 		this.driftIntensity = Math.abs( this.linearSpeed - this.acceleration ) +
 			( this.bodyNode ? Math.abs( this.bodyNode.rotation.z ) * 2 : 0 );
@@ -333,6 +347,75 @@ export class Vehicle {
 			maxCompression: Math.max( radius * 0.6, 0.12 ),
 			maxDroop: Math.max( radius * 0.9, 0.2 ),
 		} );
+
+	}
+
+	setupCannonAnchor() {
+
+		const mountParent = this.bodyNode || this.container;
+
+		this.container.updateMatrixWorld( true );
+		mountParent.updateWorldMatrix( true, true );
+
+		const bounds = new THREE.Box3().setFromObject( mountParent );
+		const centerWorld = bounds.getCenter( new THREE.Vector3() );
+		const sizeWorld = bounds.getSize( new THREE.Vector3() );
+		const localCenter = mountParent.worldToLocal( centerWorld.clone() );
+		const worldScale = mountParent.getWorldScale( _tmpScale );
+
+		this.cannonYawPivot.position.copy( localCenter );
+		this.cannonYawPivot.position.y += ( sizeWorld.y * 0.42 ) / Math.max( worldScale.y, 1e-4 );
+		this.cannonYawPivot.position.z -= ( sizeWorld.z * 0.34 ) / Math.max( worldScale.z, 1e-4 );
+
+		this.cannonPitchPivot.position.set( 0, 0.03, 0.04 );
+		this.cannonMuzzle.position.set( 0, 0, 0 );
+
+		mountParent.add( this.cannonYawPivot );
+		this.cannonYawPivot.add( this.cannonPitchPivot );
+		this.cannonPitchPivot.add( this.cannonMuzzle );
+
+	}
+
+	updateCannon( dt, controlsInput ) {
+
+		const aimX = controlsInput.cannonX ?? 0;
+		const aimY = controlsInput.cannonY ?? 0;
+
+		this.cannonMuzzle.updateWorldMatrix( true, false );
+		this.cannonMuzzle.getWorldPosition( this.cannonOrigin );
+
+		_vehicleForward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion ).projectOnPlane( _worldUp ).normalize();
+		_vehicleRight.set( 1, 0, 0 ).applyQuaternion( this.container.quaternion ).projectOnPlane( _worldUp ).normalize();
+
+		_sprayPlanar.set( 0, 0, 0 )
+			.addScaledVector( _vehicleRight, - aimX )
+			.addScaledVector( _vehicleForward, aimY );
+
+		if ( _sprayPlanar.lengthSq() < 1e-5 ) {
+
+			_sprayPlanar.copy( _vehicleForward );
+
+		} else {
+
+			_sprayPlanar.normalize();
+
+		}
+
+		this.cannonDirection.copy( _sprayPlanar ).multiplyScalar( 1 - CANNON_ELEVATION );
+		this.cannonDirection.y = CANNON_ELEVATION;
+		this.cannonDirection.normalize();
+
+		_tmpQuat.setFromUnitVectors( _forward.set( 0, 0, 1 ), this.cannonDirection );
+		this.cannonYawPivot.quaternion.copy( this.container.quaternion ).invert().multiply( _tmpQuat );
+
+	}
+
+	getCannonState() {
+
+		return {
+			origin: this.cannonOrigin,
+			direction: this.cannonDirection,
+		};
 
 	}
 

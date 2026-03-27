@@ -1,128 +1,315 @@
 import * as THREE from 'three';
 
-const POOL_SIZE = 64;
+const SKID_POOL_SIZE = 64;
+const WATER_POOL_SIZE = 260;
+const SPLASH_POOL_SIZE = 96;
+const EXTINGUISH_POOL_SIZE = 64;
 
-export class SmokeTrails {
+const _jitter = new THREE.Vector3();
+const _tangent = new THREE.Vector3();
+const _bitangent = new THREE.Vector3();
+const _up = new THREE.Vector3( 0, 1, 0 );
+
+function createRadialTexture( innerColor, midColor, outerColor ) {
+
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = 64;
+	canvas.height = 64;
+
+	const ctx = canvas.getContext( '2d' );
+	const gradient = ctx.createRadialGradient( 32, 32, 4, 32, 32, 30 );
+	gradient.addColorStop( 0.0, innerColor );
+	gradient.addColorStop( 0.45, midColor );
+	gradient.addColorStop( 1.0, outerColor );
+
+	ctx.fillStyle = gradient;
+	ctx.fillRect( 0, 0, 64, 64 );
+
+	const texture = new THREE.CanvasTexture( canvas );
+	texture.needsUpdate = true;
+	return texture;
+
+}
+
+function createPool( scene, count, materialFactory, defaultScale ) {
+
+	const particles = [];
+
+	for ( let i = 0; i < count; i ++ ) {
+
+		const sprite = new THREE.Sprite( materialFactory() );
+		sprite.visible = false;
+		sprite.scale.setScalar( defaultScale );
+		scene.add( sprite );
+
+		particles.push( {
+			sprite,
+			life: 0,
+			maxLife: 0,
+			velocity: new THREE.Vector3(),
+			startScale: defaultScale,
+			endScale: defaultScale,
+			startOpacity: 0,
+			endOpacity: 0,
+			damping: 0,
+			gravity: 0,
+			alphaMode: 'fade',
+		} );
+
+	}
+
+	return particles;
+
+}
+
+function updatePool( pool, dt ) {
+
+	for ( const particle of pool ) {
+
+		if ( particle.life <= 0 ) continue;
+
+		particle.life -= dt;
+
+		if ( particle.life <= 0 ) {
+
+			particle.sprite.visible = false;
+			continue;
+
+		}
+
+		const t = 1 - particle.life / particle.maxLife;
+		const dampingFactor = Math.max( 0, 1 - particle.damping * dt );
+
+		particle.velocity.multiplyScalar( dampingFactor );
+		particle.velocity.y -= particle.gravity * dt;
+		particle.sprite.position.addScaledVector( particle.velocity, dt );
+
+		let opacity = THREE.MathUtils.lerp( particle.startOpacity, particle.endOpacity, t );
+		if ( particle.alphaMode === 'triangle' ) opacity *= t < 0.5 ? t * 2 : ( 1 - t ) * 2;
+		particle.sprite.material.opacity = opacity;
+
+		const scale = THREE.MathUtils.lerp( particle.startScale, particle.endScale, t );
+		particle.sprite.scale.setScalar( scale );
+
+	}
+
+}
+
+export class Effects {
 
 	constructor( scene ) {
 
-		this.particles = [];
+		this.skidParticles = [];
+		this.waterParticles = [];
+		this.splashParticles = [];
+		this.extinguishParticles = [];
 
-		const map = new THREE.TextureLoader().load( 'sprites/smoke.png' );
-		this.material = new THREE.SpriteMaterial( {
-			map,
+		const smokeMap = new THREE.TextureLoader().load( 'sprites/smoke.png' );
+		const waterMap = createRadialTexture( 'rgba(255,255,255,0.95)', 'rgba(140,220,255,0.7)', 'rgba(140,220,255,0)' );
+		const splashMap = createRadialTexture( 'rgba(255,255,255,0.9)', 'rgba(190,235,255,0.55)', 'rgba(190,235,255,0)' );
+
+		this.skidParticles = createPool( scene, SKID_POOL_SIZE, () => new THREE.SpriteMaterial( {
+			map: smokeMap,
 			transparent: true,
 			depthWrite: false,
 			opacity: 0,
-			color: 0x5E5F6B,
-		} );
+			color: 0x5e5f6b,
+		} ), 0.25 );
 
-		for ( let i = 0; i < POOL_SIZE; i ++ ) {
+		this.waterParticles = createPool( scene, WATER_POOL_SIZE, () => new THREE.SpriteMaterial( {
+			map: waterMap,
+			transparent: true,
+			depthWrite: false,
+			opacity: 0,
+			color: 0xb8f4ff,
+			blending: THREE.AdditiveBlending,
+		} ), 0.1 );
 
-			const sprite = new THREE.Sprite( this.material.clone() );
-			sprite.visible = false;
-			sprite.scale.setScalar( 0.25 );
-			scene.add( sprite );
+		this.splashParticles = createPool( scene, SPLASH_POOL_SIZE, () => new THREE.SpriteMaterial( {
+			map: splashMap,
+			transparent: true,
+			depthWrite: false,
+			opacity: 0,
+			color: 0xd7f6ff,
+			blending: THREE.AdditiveBlending,
+		} ), 0.12 );
 
-			this.particles.push( {
-				sprite,
-				life: 0,
-				maxLife: 0,
-				velocity: new THREE.Vector3(),
-				initialScale: 0,
-			} );
+		this.extinguishParticles = createPool( scene, EXTINGUISH_POOL_SIZE, () => new THREE.SpriteMaterial( {
+			map: smokeMap,
+			transparent: true,
+			depthWrite: false,
+			opacity: 0,
+			color: 0x80848f,
+		} ), 0.35 );
 
-		}
-
-		this.emitIndex = 0;
-
-	}
-
-	update( dt, vehicle ) {
-
-		const shouldEmit = vehicle.driftIntensity > 0.25 && vehicle.colliding;
-
-		// Emit new particles from back wheel positions
-		if ( shouldEmit ) {
-
-			if ( vehicle.wheelBL ) this.emitAtWheel( vehicle.wheelBL, vehicle );
-			if ( vehicle.wheelBR ) this.emitAtWheel( vehicle.wheelBR, vehicle );
-
-		}
-
-		// Update existing
-		for ( const p of this.particles ) {
-
-			if ( p.life <= 0 ) continue;
-
-			p.life -= dt;
-
-			if ( p.life <= 0 ) {
-
-				p.sprite.visible = false;
-				continue;
-
-			}
-
-			const t = 1 - ( p.life / p.maxLife );
-
-			// Apply damping to velocity (Godot damping = 1.0)
-			const damping = Math.max( 0, 1 - dt );
-			p.velocity.multiplyScalar( damping );
-
-			p.sprite.position.addScaledVector( p.velocity, dt );
-
-			// Alpha curve: 0 → 1 (at midlife) → 0 (matching Godot's alpha_curve)
-			const alpha = t < 0.5 ? t * 2 : ( 1 - t ) * 2;
-			p.sprite.material.opacity = alpha;
-
-			// Scale curve: 0.5 → 1.0 (at midlife) → 0.2 (matching Godot's scale_curve)
-			let scaleFactor;
-			if ( t < 0.5 ) {
-
-				scaleFactor = 0.5 + t * 1.0; // 0.5 → 1.0
-
-			} else {
-
-				scaleFactor = 1.0 - ( t - 0.5 ) * 1.6; // 1.0 → 0.2
-
-			}
-
-			p.sprite.scale.setScalar( p.initialScale * scaleFactor );
-
-		}
+		this.skidEmitIndex = 0;
+		this.waterEmitIndex = 0;
+		this.splashEmitIndex = 0;
+		this.extinguishEmitIndex = 0;
+		this.waterAccumulator = 0;
+		this.splashAccumulator = 0;
+		this.splashDelayElapsed = 0;
 
 	}
 
-	emitAtWheel( wheel, vehicle ) {
+	update( dt, vehicle, waterState = null ) {
 
-		const p = this.particles[ this.emitIndex ];
-		this.emitIndex = ( this.emitIndex + 1 ) % POOL_SIZE;
+		const shouldEmitSkid = vehicle.driftIntensity > 0.25 && vehicle.colliding;
 
-		// Get wheel world position, but use road surface Y
-		const worldPos = new THREE.Vector3();
-		wheel.getWorldPosition( worldPos );
-		worldPos.y = vehicle.container.position.y + 0.05;
+		if ( shouldEmitSkid ) {
 
-		p.sprite.position.copy( worldPos );
-		p.sprite.visible = true;
-		p.sprite.material.opacity = 0;
+			if ( vehicle.wheelBL ) this.emitSkidAtWheel( vehicle.wheelBL, vehicle );
+			if ( vehicle.wheelBR ) this.emitSkidAtWheel( vehicle.wheelBR, vehicle );
 
-		// Godot: scale_min = 0.25, scale_max = 0.5
-		p.initialScale = 0.25 + Math.random() * 0.25;
-		p.sprite.scale.setScalar( p.initialScale * 0.5 );
+		}
 
-		// Godot: no gravity, damping = 1.0 — minimal velocity
-		p.velocity.set(
+		if ( waterState?.active ) {
+
+			this.waterAccumulator += dt * 240;
+			this.splashDelayElapsed += dt;
+
+			while ( this.waterAccumulator >= 1 ) {
+
+				this.emitWaterParticle( waterState.origin, waterState.direction );
+				this.waterAccumulator -= 1;
+
+			}
+
+			if ( waterState.impactPoint && this.splashDelayElapsed >= ( waterState.travelTime ?? 0 ) ) {
+
+				this.splashAccumulator += dt * ( waterState.hit ? 42 : 22 );
+
+				while ( this.splashAccumulator >= 1 ) {
+
+					this.emitSplashParticle( waterState.impactPoint, waterState.impactNormal || _up );
+					this.splashAccumulator -= 1;
+
+				}
+
+			}
+
+		} else {
+
+			this.waterAccumulator = 0;
+			this.splashAccumulator = 0;
+			this.splashDelayElapsed = 0;
+
+		}
+
+		updatePool( this.skidParticles, dt );
+		updatePool( this.waterParticles, dt );
+		updatePool( this.splashParticles, dt );
+		updatePool( this.extinguishParticles, dt );
+
+	}
+
+	emitSkidAtWheel( wheel, vehicle ) {
+
+		const particle = this.skidParticles[ this.skidEmitIndex ];
+		this.skidEmitIndex = ( this.skidEmitIndex + 1 ) % this.skidParticles.length;
+
+		wheel.getWorldPosition( particle.sprite.position );
+		particle.sprite.position.y = vehicle.container.position.y + 0.05;
+		particle.sprite.visible = true;
+
+		particle.startScale = 0.14 + Math.random() * 0.12;
+		particle.endScale = particle.startScale * 1.9;
+		particle.startOpacity = 0.7;
+		particle.endOpacity = 0.1;
+		particle.velocity.set(
 			( Math.random() - 0.5 ) * 0.2,
 			Math.random() * 0.1,
 			( Math.random() - 0.5 ) * 0.2
 		);
-
-		// Godot: lifetime = 0.5
-		p.maxLife = 0.5;
-		p.life = p.maxLife;
+		particle.maxLife = 0.5;
+		particle.life = particle.maxLife;
+		particle.damping = 1.0;
+		particle.gravity = 0;
+		particle.alphaMode = 'triangle';
 
 	}
 
+	emitWaterParticle( origin, direction ) {
+
+		const particle = this.waterParticles[ this.waterEmitIndex ];
+		this.waterEmitIndex = ( this.waterEmitIndex + 1 ) % this.waterParticles.length;
+
+		_jitter.set(
+			( Math.random() - 0.5 ) * 0.09,
+			( Math.random() - 0.5 ) * 0.09,
+			( Math.random() - 0.5 ) * 0.09
+		);
+
+		particle.sprite.position.copy( origin ).add( _jitter );
+		particle.sprite.visible = true;
+		particle.startScale = 0.11 + Math.random() * 0.06;
+		particle.endScale = 0.045;
+		particle.startOpacity = 1.0;
+		particle.endOpacity = 0.12;
+		particle.velocity.copy( direction ).multiplyScalar( 12 + Math.random() * 2 ).add( _jitter.multiplyScalar( 14 ) );
+		particle.maxLife = 0.46 + Math.random() * 0.16;
+		particle.life = particle.maxLife;
+		particle.damping = 0.45;
+		particle.gravity = 18.0;
+		particle.alphaMode = 'fade';
+
+	}
+
+	emitSplashParticle( point, normal ) {
+
+		const particle = this.splashParticles[ this.splashEmitIndex ];
+		this.splashEmitIndex = ( this.splashEmitIndex + 1 ) % this.splashParticles.length;
+
+		_tangent.crossVectors( normal, Math.abs( normal.y ) > 0.9 ? new THREE.Vector3( 1, 0, 0 ) : _up ).normalize();
+		_bitangent.crossVectors( normal, _tangent ).normalize();
+		_jitter.copy( normal ).multiplyScalar( 0.8 + Math.random() * 1.4 )
+			.addScaledVector( _tangent, ( Math.random() - 0.5 ) * 2.2 )
+			.addScaledVector( _bitangent, ( Math.random() - 0.5 ) * 2.2 );
+
+		particle.sprite.position.copy( point );
+		particle.sprite.visible = true;
+		particle.startScale = 0.08 + Math.random() * 0.08;
+		particle.endScale = 0.02;
+		particle.startOpacity = 0.75;
+		particle.endOpacity = 0.0;
+		particle.velocity.copy( _jitter );
+		particle.maxLife = 0.2 + Math.random() * 0.18;
+		particle.life = particle.maxLife;
+		particle.damping = 1.8;
+		particle.gravity = 6.5;
+		particle.alphaMode = 'fade';
+
+	}
+
+	emitExtinguishSmoke( position, amount = 16 ) {
+
+		for ( let i = 0; i < amount; i ++ ) {
+
+			const particle = this.extinguishParticles[ this.extinguishEmitIndex ];
+			this.extinguishEmitIndex = ( this.extinguishEmitIndex + 1 ) % this.extinguishParticles.length;
+
+			particle.sprite.position.copy( position ).add( new THREE.Vector3(
+				( Math.random() - 0.5 ) * 0.9,
+				Math.random() * 0.45,
+				( Math.random() - 0.5 ) * 0.9
+			) );
+			particle.sprite.visible = true;
+			particle.startScale = 0.25 + Math.random() * 0.15;
+			particle.endScale = particle.startScale * ( 2.4 + Math.random() * 0.8 );
+			particle.startOpacity = 0.7;
+			particle.endOpacity = 0.0;
+			particle.velocity.set(
+				( Math.random() - 0.5 ) * 0.7,
+				1.1 + Math.random() * 1.2,
+				( Math.random() - 0.5 ) * 0.7
+			);
+			particle.maxLife = 1.0 + Math.random() * 0.8;
+			particle.life = particle.maxLife;
+			particle.damping = 0.55;
+			particle.gravity = - 0.2;
+			particle.alphaMode = 'fade';
+
+		}
+
+	}
 }
