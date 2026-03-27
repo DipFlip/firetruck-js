@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { rigidBody, box, sphere, capsule, convexHull, transformed, offsetCenterOfMass, pointConstraint, ConstraintSpace, MotionType, MotionQuality, dof } from 'crashcat';
-import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE, getDecorationPlacements, getTrackPiecePlacements } from './Track.js';
+import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE, getDecorationPlacements, getTrackPiecePlacements, shouldIncludeTreeNode } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
 const VEHICLE_SPHERE_RADIUS = 0.5;
@@ -437,6 +437,7 @@ function createStaticPlacementColliders( world, placements, models, collisionGro
 
 		for ( const profile of profiles ) {
 
+			if ( ! shouldIncludeTreeNode( profile.name, placement ) ) continue;
 			const position = getConvexShapeWorldPosition( profile.shape, baseX, baseY, baseZ, rad );
 
 			rigidBody.create( world, {
@@ -515,6 +516,7 @@ export function createDecorationColliderSystem( world, models, customCells, coll
 
 		for ( const profile of profiles ) {
 
+			if ( ! shouldIncludeTreeNode( profile.name, placement ) ) continue;
 			const position = getConvexShapeWorldPosition( profile.shape, baseX, baseY, baseZ, rad );
 			const body = rigidBody.create( world, {
 				shape: profile.shape,

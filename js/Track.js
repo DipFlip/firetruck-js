@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 export const ORIENT_DEG = { 0: 0, 10: 180, 16: 90, 22: 270 };
+export const TreeTightness = 0.3;
 
 export const CELL = 9.99 * 0.75; // 7.4925
 export const CELL_RAW = 9.99;
@@ -119,6 +120,85 @@ function hashDecorationCell( gx, gz ) {
 	let h = gx * 374761393 + gz * 668265263;
 	h = ( h ^ ( h >> 13 ) ) * 1274126177;
 	return ( h ^ ( h >> 16 ) ) >>> 0;
+
+}
+
+function hashString( value ) {
+
+	let h = 2166136261;
+
+	for ( let i = 0; i < value.length; i ++ ) {
+
+		h ^= value.charCodeAt( i );
+		h = Math.imul( h, 16777619 );
+
+	}
+
+	return h >>> 0;
+
+}
+
+function matchesTaggedPrefix( nodeName, prefix ) {
+
+	if ( ! nodeName ) return false;
+
+	const lowerName = nodeName.toLowerCase();
+	if ( lowerName.startsWith( prefix ) ) return true;
+
+	const compactPrefix = prefix.endsWith( '.' ) ? prefix.slice( 0, -1 ) : prefix;
+	if ( ! lowerName.startsWith( compactPrefix ) ) return false;
+
+	const nextChar = lowerName.charAt( compactPrefix.length );
+	return nextChar !== '' && nextChar >= '0' && nextChar <= '9';
+
+}
+
+export function shouldIncludeTreeNode( nodeName, placement, treeTightness = TreeTightness ) {
+
+	if ( ! matchesTaggedPrefix( nodeName, 'tree.' ) ) return true;
+
+	const clampedTightness = THREE.MathUtils.clamp( treeTightness, 0, 1 );
+	if ( clampedTightness <= 0 ) return false;
+	if ( clampedTightness >= 1 ) return true;
+
+	let h = hashDecorationCell( placement.gx, placement.gz );
+	h ^= hashString( placement.key );
+	h = Math.imul( h, 16777619 ) >>> 0;
+	h ^= hashString( nodeName.toLowerCase() );
+	h = Math.imul( h, 16777619 ) >>> 0;
+
+	return h / 4294967296 < clampedTightness;
+
+}
+
+function findTaggedAncestorName( object, prefix ) {
+
+	let current = object;
+
+	while ( current ) {
+
+		if ( matchesTaggedPrefix( current.name, prefix ) ) return current.name;
+		current = current.parent;
+
+	}
+
+	return null;
+
+}
+
+function collectTaggedRoots( root, prefix ) {
+
+	const taggedRoots = [];
+
+	root.traverse( ( object ) => {
+
+		if ( ! matchesTaggedPrefix( object.name, prefix ) ) return;
+		if ( findTaggedAncestorName( object.parent, prefix ) ) return;
+		taggedRoots.push( object );
+
+	} );
+
+	return taggedRoots;
 
 }
 
@@ -299,6 +379,12 @@ export function buildTrack( scene, models, customCells ) {
 		const piece = models[ placement.key ]?.clone();
 		if ( ! piece ) continue;
 
+		for ( const treeRoot of collectTaggedRoots( piece, 'tree.' ) ) {
+
+			if ( shouldIncludeTreeNode( treeRoot.name, placement ) ) continue;
+			treeRoot.removeFromParent();
+
+		}
 		piece.userData.trackKey = placement.key;
 		piece.position.set( placement.x, placement.y, placement.z );
 		piece.rotation.y = placement.rotationY;
@@ -308,24 +394,24 @@ export function buildTrack( scene, models, customCells ) {
 
 	{
 
-		const emptyPositions = [];
-		const forestPositions = [];
-		const tentPositions = [];
+		const emptyPlacements = [];
+		const forestPlacements = [];
+		const tentPlacements = [];
 		const decorationPlacements = getDecorationPlacements( customCells );
 
 		for ( const placement of decorationPlacements ) {
 
 			if ( placement.key === 'decoration-empty' ) {
 
-				emptyPositions.push( placement.x, placement.z );
+				emptyPlacements.push( placement );
 
 			} else if ( placement.key === 'decoration-forest' ) {
 
-				forestPositions.push( placement.x, placement.z );
+				forestPlacements.push( placement );
 
 			} else if ( placement.key === 'decoration-tents' ) {
 
-				tentPositions.push( placement.x, placement.z, placement.rotationY / ( Math.PI / 2 ) );
+				tentPlacements.push( placement );
 
 			}
 
@@ -333,23 +419,24 @@ export function buildTrack( scene, models, customCells ) {
 
 		const _dummy = new THREE.Object3D();
 
-		function createInstances( src, positions ) {
+		function addInstancedMeshesFromSource( src, placements ) {
 
-			if ( positions.length === 0 || ! src ) return;
-
-			const count = positions.length / 2;
+			if ( placements.length === 0 || ! src ) return;
 
 			src.traverse( ( child ) => {
 
 				if ( ! child.isMesh ) return;
 
-				const inst = new THREE.InstancedMesh( child.geometry, child.material, count );
+				const inst = new THREE.InstancedMesh( child.geometry, child.material, placements.length );
+				inst.name = child.name;
 				inst.castShadow = true;
 				inst.receiveShadow = true;
 
-				for ( let i = 0; i < count; i ++ ) {
+				for ( let i = 0; i < placements.length; i ++ ) {
 
-					_dummy.position.set( positions[ i * 2 ], 0.5, positions[ i * 2 + 1 ] );
+					const placement = placements[ i ];
+					_dummy.position.set( placement.x, placement.y, placement.z );
+					_dummy.rotation.set( 0, placement.rotationY, 0 );
 					_dummy.updateMatrix();
 					inst.setMatrixAt( i, _dummy.matrix );
 
@@ -361,38 +448,34 @@ export function buildTrack( scene, models, customCells ) {
 
 		}
 
-		createInstances( models[ 'decoration-empty' ], emptyPositions );
-		createInstances( models[ 'decoration-forest' ], forestPositions );
+		function createInstances( src, placements ) {
 
-		// Place tents with random rotations
-		const tentSrc = models[ 'decoration-tents' ];
+			if ( placements.length === 0 || ! src ) return;
 
-		if ( tentSrc && tentPositions.length > 0 ) {
+			const base = src.clone();
+			const treeRoots = collectTaggedRoots( base, 'tree.' );
 
-			const tentCount = tentPositions.length / 3;
+			for ( const treeRoot of treeRoots ) {
 
-			tentSrc.traverse( ( child ) => {
+				const filteredPlacements = placements.filter( ( placement ) => shouldIncludeTreeNode( treeRoot.name, placement ) );
+				if ( filteredPlacements.length === 0 ) {
 
-				if ( ! child.isMesh ) return;
-
-				const inst = new THREE.InstancedMesh( child.geometry, child.material, tentCount );
-				inst.castShadow = true;
-				inst.receiveShadow = true;
-
-				for ( let i = 0; i < tentCount; i ++ ) {
-
-					_dummy.position.set( tentPositions[ i * 3 ], 0.5, tentPositions[ i * 3 + 1 ] );
-					_dummy.rotation.y = tentPositions[ i * 3 + 2 ] * Math.PI / 2;
-					_dummy.updateMatrix();
-					inst.setMatrixAt( i, _dummy.matrix );
+					treeRoot.removeFromParent();
+					continue;
 
 				}
+				addInstancedMeshesFromSource( treeRoot, filteredPlacements );
+				treeRoot.removeFromParent();
 
-				decoGroup.add( inst );
+			}
 
-			} );
+			addInstancedMeshesFromSource( base, placements );
 
 		}
+
+		createInstances( models[ 'decoration-empty' ], emptyPlacements );
+		createInstances( models[ 'decoration-forest' ], forestPlacements );
+		createInstances( models[ 'decoration-tents' ], tentPlacements );
 
 	}
 
