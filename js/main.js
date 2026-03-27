@@ -6,7 +6,7 @@ import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds } from './Track.js';
-import { buildWallColliders, buildRampColliders, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
+import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, createDecorationColliderSystem, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
 import { SmokeTrails } from './Particles.js';
 import { GameAudio } from './Audio.js';
 
@@ -271,6 +271,15 @@ async function init() {
 	debugWallGroup.clear();
 	const wallProbeBoxes = buildWallColliders( world, null, customCells, GROUP_WALL, GROUP_VEHICLE_COLLIDER );
 	buildRampColliders( world, customCells, models.ramp, GROUP_GROUND, GROUND_COLLISION_MASK, debugWallGroup );
+	buildTrackObstacleColliders( world, models, customCells, GROUP_WALL, GROUP_VEHICLE_COLLIDER, debugWallGroup );
+	const decorationColliderSystem = createDecorationColliderSystem(
+		world,
+		models,
+		customCells,
+		GROUP_WALL,
+		GROUP_VEHICLE_COLLIDER,
+		debugWallGroup
+	);
 	const groundProbeShape = sphere.create( { radius: GROUND_PROBE_RADIUS } );
 	const groundProbeCollector = createClosestCastShapeCollector();
 	const groundProbeSettings = createDefaultCastShapeSettings();
@@ -323,6 +332,8 @@ async function init() {
 		vehicle.heading = spawn.angle;
 
 	}
+
+	decorationColliderSystem?.update( vehicle.spherePos.x, vehicle.spherePos.z );
 
 	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
 	const vehicleCollision = createVehicleCollisionProfile( vehicleModel );
@@ -604,6 +615,7 @@ async function init() {
 
 		const input = controls.update();
 
+		decorationColliderSystem?.update( sphereBody.position[ 0 ], sphereBody.position[ 2 ] );
 		updateWorld( world, contactListener, dt );
 
 		const groundState = sampleGroundState();

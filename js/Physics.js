@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { rigidBody, box, sphere, capsule, convexHull, transformed, offsetCenterOfMass, pointConstraint, ConstraintSpace, MotionType, MotionQuality, dof } from 'crashcat';
-import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE } from './Track.js';
+import { TRACK_CELLS, CELL_RAW, ORIENT_DEG, GRID_SCALE, getDecorationPlacements, getTrackPiecePlacements } from './Track.js';
 
 const _debugMat = new THREE.MeshBasicMaterial( { color: 0x00ff00, wireframe: true } );
 const VEHICLE_SPHERE_RADIUS = 0.5;
@@ -21,8 +21,9 @@ const MIN_BUMPER_HALF_HEIGHT = 0.18;
 const MIN_BUMPER_BOTTOM = VEHICLE_SPHERE_RADIUS * 0.9;
 const CAPSULE_SAMPLE_OFFSETS = [ - 1, - 0.5, 0, 0.5, 1 ];
 const SPHERE_SAMPLE_OFFSETS = [ 0 ];
+const DECORATION_COLLIDER_RADIUS_CELLS = 2;
 let _rampShape = null;
-let _rampDebugGeometry = null;
+const _convexHullDebugGeometries = new WeakMap();
 
 function addDebugBox( group, halfExtents, position, quaternion ) {
 
@@ -262,7 +263,8 @@ function getRampShape( rampModel ) {
 
 function getConvexHullDebugGeometry( shape ) {
 
-	if ( _rampDebugGeometry ) return _rampDebugGeometry;
+	const cached = _convexHullDebugGeometries.get( shape );
+	if ( cached ) return cached;
 
 	const positions = [];
 
@@ -288,7 +290,7 @@ function getConvexHullDebugGeometry( shape ) {
 
 	const geometry = new THREE.BufferGeometry();
 	geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( positions, 3 ) );
-	_rampDebugGeometry = geometry;
+	_convexHullDebugGeometries.set( shape, geometry );
 	return geometry;
 
 }
@@ -357,6 +359,250 @@ export function buildRampColliders( world, customCells, rampModel, collisionGrou
 		}
 
 	}
+
+}
+
+function findNamedNodes( root, matcher ) {
+
+	const matches = [];
+
+	root.traverse( ( child ) => {
+
+		if ( child.name && matcher( child.name.toLowerCase(), child ) ) matches.push( child );
+
+	} );
+
+	return matches;
+
+}
+
+function getNamedObstacleColliderProfiles( model ) {
+
+	if ( ! model ) return [];
+
+	const colliderNodes = findNamedNodes( model, ( name ) => name.startsWith( 'tree' ) || name.startsWith( 'bump' ) );
+	const profiles = [];
+
+	for ( const node of colliderNodes ) {
+
+		const positions = collectNodeVerticesInRootSpace( model, node );
+		if ( positions.length < 12 ) continue;
+
+		const shape = convexHull.create( { positions } );
+		profiles.push( {
+			name: node.name,
+			shape,
+		} );
+
+	}
+
+	return profiles;
+
+}
+
+function getConvexShapeWorldPosition( shape, baseX, baseY, baseZ, rad ) {
+
+	_tmpQuatA.setFromAxisAngle( THREE.Object3D.DEFAULT_UP, rad );
+	_tmpVec3A.fromArray( shape.centerOfMass ).applyQuaternion( _tmpQuatA );
+	return _tmpVec3B.set(
+		baseX + _tmpVec3A.x,
+		baseY + _tmpVec3A.y,
+		baseZ + _tmpVec3A.z
+	);
+
+}
+
+function createStaticPlacementColliders( world, placements, models, collisionGroups, collisionMask, debugGroup = null ) {
+
+	if ( !models || !placements?.length ) return;
+	const profileCache = new Map();
+
+	for ( const placement of placements ) {
+
+		let profiles = profileCache.get( placement.key );
+		if ( profiles === undefined ) {
+
+			profiles = getNamedObstacleColliderProfiles( models[ placement.key ] );
+			profileCache.set( placement.key, profiles );
+
+		}
+
+		if ( profiles.length === 0 ) continue;
+
+		const rad = placement.rotationY;
+		const quaternion = [ 0, Math.sin( rad / 2 ), 0, Math.cos( rad / 2 ) ];
+		const baseX = placement.x * GRID_SCALE;
+		const baseY = placement.y * GRID_SCALE - 0.5;
+		const baseZ = placement.z * GRID_SCALE;
+
+		for ( const profile of profiles ) {
+
+			const position = getConvexShapeWorldPosition( profile.shape, baseX, baseY, baseZ, rad );
+
+			rigidBody.create( world, {
+				shape: profile.shape,
+				motionType: MotionType.STATIC,
+				objectLayer: world._OL_STATIC,
+				position: [ position.x, position.y, position.z ],
+				quaternion,
+				friction: 0.0,
+				restitution: 0.1,
+				collisionGroups,
+				collisionMask,
+			} );
+
+			if ( debugGroup ) addDebugConvexHull( debugGroup, profile.shape, [ position.x, position.y, position.z ], quaternion );
+
+		}
+
+	}
+
+}
+
+export function buildTrackObstacleColliders( world, models, customCells, collisionGroups, collisionMask, debugGroup = null ) {
+
+	createStaticPlacementColliders(
+		world,
+		getTrackPiecePlacements( customCells ),
+		models,
+		collisionGroups,
+		collisionMask,
+		debugGroup
+	);
+
+}
+
+export function createDecorationColliderSystem( world, models, customCells, collisionGroups, collisionMask, debugGroup = null ) {
+
+	if ( ! models ) return null;
+
+	const placements = getDecorationPlacements( customCells );
+	if ( placements.length === 0 ) return null;
+
+	const profileCache = new Map();
+
+	for ( const placement of placements ) {
+
+		if ( profileCache.has( placement.key ) ) continue;
+		const profiles = getNamedObstacleColliderProfiles( models[ placement.key ] );
+		if ( profiles.length > 0 ) profileCache.set( placement.key, profiles );
+
+	}
+
+	if ( profileCache.size === 0 ) return null;
+
+	const activeBodiesByIndex = new Map();
+	const debugDecorationGroup = debugGroup ? new THREE.Group() : null;
+	if ( debugDecorationGroup ) debugGroup.add( debugDecorationGroup );
+	let lastCenterGX = null;
+	let lastCenterGZ = null;
+
+	function activatePlacement( index ) {
+
+		if ( activeBodiesByIndex.has( index ) ) return;
+
+		const placement = placements[ index ];
+		const profiles = profileCache.get( placement.key );
+		if ( ! profiles || profiles.length === 0 ) return;
+
+		const rad = placement.rotationY;
+		const quaternion = [ 0, Math.sin( rad / 2 ), 0, Math.cos( rad / 2 ) ];
+		const baseX = placement.x * GRID_SCALE;
+		const baseY = placement.y * GRID_SCALE - 0.5;
+		const baseZ = placement.z * GRID_SCALE;
+		const bodyIds = [];
+		const debugMeshes = [];
+
+		for ( const profile of profiles ) {
+
+			const position = getConvexShapeWorldPosition( profile.shape, baseX, baseY, baseZ, rad );
+			const body = rigidBody.create( world, {
+				shape: profile.shape,
+				motionType: MotionType.STATIC,
+				objectLayer: world._OL_STATIC,
+				position: [ position.x, position.y, position.z ],
+				quaternion,
+				friction: 0.0,
+				restitution: 0.1,
+				collisionGroups,
+				collisionMask,
+			} );
+			bodyIds.push( body.id );
+
+			if ( debugDecorationGroup ) {
+
+				const mesh = new THREE.Mesh( getConvexHullDebugGeometry( profile.shape ), _debugMat );
+				mesh.position.set( position.x, position.y, position.z );
+				mesh.quaternion.set( quaternion[ 0 ], quaternion[ 1 ], quaternion[ 2 ], quaternion[ 3 ] );
+				debugDecorationGroup.add( mesh );
+				debugMeshes.push( mesh );
+
+			}
+
+		}
+
+		activeBodiesByIndex.set( index, { bodyIds, debugMeshes } );
+
+	}
+
+	function deactivatePlacement( index ) {
+
+		const activeEntry = activeBodiesByIndex.get( index );
+		if ( ! activeEntry ) return;
+
+		for ( const bodyId of activeEntry.bodyIds ) {
+
+			const body = rigidBody.get( world, bodyId );
+			if ( body ) rigidBody.remove( world, body );
+
+		}
+
+		for ( const mesh of activeEntry.debugMeshes ) mesh.removeFromParent();
+
+		activeBodiesByIndex.delete( index );
+
+	}
+
+	function update( worldX, worldZ ) {
+
+		const centerGX = Math.floor( worldX / ( CELL_RAW * GRID_SCALE ) );
+		const centerGZ = Math.floor( worldZ / ( CELL_RAW * GRID_SCALE ) );
+
+		if ( centerGX === lastCenterGX && centerGZ === lastCenterGZ ) return;
+
+		lastCenterGX = centerGX;
+		lastCenterGZ = centerGZ;
+
+		const desiredIndices = new Set();
+
+		for ( let i = 0; i < placements.length; i ++ ) {
+
+			const placement = placements[ i ];
+			if ( ! profileCache.has( placement.key ) ) continue;
+			if ( Math.abs( placement.gx - centerGX ) > DECORATION_COLLIDER_RADIUS_CELLS ) continue;
+			if ( Math.abs( placement.gz - centerGZ ) > DECORATION_COLLIDER_RADIUS_CELLS ) continue;
+			desiredIndices.add( i );
+
+		}
+
+		for ( const index of [ ...activeBodiesByIndex.keys() ] ) {
+
+			if ( ! desiredIndices.has( index ) ) deactivatePlacement( index );
+
+		}
+
+		for ( const index of desiredIndices ) activatePlacement( index );
+
+	}
+
+	function dispose() {
+
+		for ( const index of [ ...activeBodiesByIndex.keys() ] ) deactivatePlacement( index );
+		if ( debugDecorationGroup ) debugDecorationGroup.removeFromParent();
+
+	}
+
+	return { update, dispose };
 
 }
 

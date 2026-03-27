@@ -114,55 +114,54 @@ const NPC_TRUCKS = [
 	[ 'vehicle-truck-red',    -1.36, -0.15, -23.80, 155.9 ],
 ];
 
-export function buildTrack( scene, models, customCells ) {
+function hashDecorationCell( gx, gz ) {
 
-	const trackGroup = new THREE.Group();
-	trackGroup.position.y = -0.5;
+	let h = gx * 374761393 + gz * 668265263;
+	h = ( h ^ ( h >> 13 ) ) * 1274126177;
+	return ( h ^ ( h >> 16 ) ) >>> 0;
 
-	const trackPieceGroup = new THREE.Group();
-	const decoGroup = new THREE.Group();
+}
 
+export function getDecorationPlacements( customCells ) {
+
+	const placements = [];
 	const cells = customCells || TRACK_CELLS;
 
-	for ( const [ gx, gz, key, orient ] of cells ) {
+	if ( ! customCells ) {
 
-		if ( key === 'track-ramp' ) {
+		for ( const [ gx, gz, key, orient ] of DECO_CELLS ) {
 
-			const basePiece = placePiece( models, 'track-straight', gx, gz, orient );
-			if ( basePiece ) trackPieceGroup.add( basePiece );
-
-			const rampPiece = placePiece( models, 'ramp', gx, gz, orient );
-			if ( rampPiece ) trackPieceGroup.add( rampPiece );
-
-			continue;
+			placements.push( {
+				key,
+				gx,
+				gz,
+				x: ( gx + 0.5 ) * CELL_RAW,
+				y: 0.5,
+				z: ( gz + 0.5 ) * CELL_RAW,
+				rotationY: THREE.MathUtils.degToRad( ORIENT_DEG[ orient ] || 0 ),
+			} );
 
 		}
 
-		const piece = placePiece( models, key, gx, gz, orient );
-		if ( piece ) trackPieceGroup.add( piece );
+	}
+
+	const occupied = new Set();
+	let minX = Infinity, maxX = - Infinity;
+	let minZ = Infinity, maxZ = - Infinity;
+
+	for ( const [ gx, gz ] of cells ) {
+
+		occupied.add( gx + ',' + gz );
+		minX = Math.min( minX, gx );
+		maxX = Math.max( maxX, gx );
+		minZ = Math.min( minZ, gz );
+		maxZ = Math.max( maxZ, gz );
 
 	}
 
 	if ( ! customCells ) {
 
-		// Place hand-authored decorations for the default track
-		for ( const [ gx, gz, key, orient ] of DECO_CELLS ) {
-
-			const piece = placePiece( models, key, gx, gz, orient );
-			if ( piece ) decoGroup.add( piece );
-
-		}
-
-	}
-
-	{
-
-		// Auto-generate decorations to fill any gaps
-		const occupied = new Set();
-		let minX = Infinity, maxX = - Infinity;
-		let minZ = Infinity, maxZ = - Infinity;
-
-		for ( const [ gx, gz ] of cells ) {
+		for ( const [ gx, gz ] of DECO_CELLS ) {
 
 			occupied.add( gx + ',' + gz );
 			minX = Math.min( minX, gx );
@@ -172,66 +171,161 @@ export function buildTrack( scene, models, customCells ) {
 
 		}
 
-		// Also mark existing decoration cells as occupied
-		if ( ! customCells ) {
+	}
 
-			for ( const [ gx, gz ] of DECO_CELLS ) {
+	const pad = 3;
 
-				occupied.add( gx + ',' + gz );
-				minX = Math.min( minX, gx );
-				maxX = Math.max( maxX, gx );
-				minZ = Math.min( minZ, gz );
-				maxZ = Math.max( maxZ, gz );
+	for ( let gz = minZ - pad; gz <= maxZ + pad; gz ++ ) {
+
+		for ( let gx = minX - pad; gx <= maxX + pad; gx ++ ) {
+
+			if ( occupied.has( gx + ',' + gz ) ) continue;
+
+			const distX = gx < minX ? minX - gx : gx > maxX ? gx - maxX : 0;
+			const distZ = gz < minZ ? minZ - gz : gz > maxZ ? gz - maxZ : 0;
+			const dist = Math.max( distX, distZ );
+
+			const x = ( gx + 0.5 ) * CELL_RAW;
+			const z = ( gz + 0.5 ) * CELL_RAW;
+			const hash = hashDecorationCell( gx, gz );
+
+			if ( dist <= 1 ) {
+
+				if ( hash % 7 === 0 ) {
+
+					placements.push( {
+						key: 'decoration-tents',
+						gx,
+						gz,
+						x,
+						y: 0.5,
+						z,
+						rotationY: ( hash % 4 ) * Math.PI / 2,
+					} );
+
+				} else {
+
+					placements.push( {
+						key: 'decoration-empty',
+						gx,
+						gz,
+						x,
+						y: 0.5,
+						z,
+						rotationY: 0,
+					} );
+
+				}
+
+			} else {
+
+				placements.push( {
+					key: 'decoration-forest',
+					gx,
+					gz,
+					x,
+					y: 0.5,
+					z,
+					rotationY: 0,
+				} );
 
 			}
 
 		}
 
-		const pad = 3;
-		const emptyPositions = [];
-		const forestPositions = [];
-		const tentPositions = [];
+	}
 
-		// Simple hash for deterministic pseudo-random placement
-		function hash( gx, gz ) {
+	return placements;
 
-			let h = gx * 374761393 + gz * 668265263;
-			h = ( h ^ ( h >> 13 ) ) * 1274126177;
-			return ( h ^ ( h >> 16 ) ) >>> 0;
+}
+
+export function getTrackPiecePlacements( customCells ) {
+
+	const placements = [];
+	const cells = customCells || TRACK_CELLS;
+
+	for ( const [ gx, gz, key, orient ] of cells ) {
+
+		if ( key === 'track-ramp' ) {
+
+			placements.push( {
+				key: 'track-straight',
+				gx,
+				gz,
+				x: ( gx + 0.5 ) * CELL_RAW,
+				y: 0.5,
+				z: ( gz + 0.5 ) * CELL_RAW,
+				rotationY: THREE.MathUtils.degToRad( ORIENT_DEG[ orient ] || 0 ),
+			} );
+			placements.push( {
+				key: 'ramp',
+				gx,
+				gz,
+				x: ( gx + 0.5 ) * CELL_RAW,
+				y: 0.5,
+				z: ( gz + 0.5 ) * CELL_RAW,
+				rotationY: THREE.MathUtils.degToRad( ORIENT_DEG[ orient ] || 0 ),
+			} );
+			continue;
 
 		}
 
-		for ( let gz = minZ - pad; gz <= maxZ + pad; gz ++ ) {
+		placements.push( {
+			key,
+			gx,
+			gz,
+			x: ( gx + 0.5 ) * CELL_RAW,
+			y: 0.5,
+			z: ( gz + 0.5 ) * CELL_RAW,
+			rotationY: THREE.MathUtils.degToRad( ORIENT_DEG[ orient ] || 0 ),
+		} );
 
-			for ( let gx = minX - pad; gx <= maxX + pad; gx ++ ) {
+	}
 
-				if ( occupied.has( gx + ',' + gz ) ) continue;
+	return placements;
 
-				const distX = gx < minX ? minX - gx : gx > maxX ? gx - maxX : 0;
-				const distZ = gz < minZ ? minZ - gz : gz > maxZ ? gz - maxZ : 0;
-				const dist = Math.max( distX, distZ );
+}
 
-				const x = ( gx + 0.5 ) * CELL_RAW;
-				const z = ( gz + 0.5 ) * CELL_RAW;
+export function buildTrack( scene, models, customCells ) {
 
-				if ( dist <= 1 ) {
+	const trackGroup = new THREE.Group();
+	trackGroup.position.y = -0.5;
 
-					// ~15% chance of tents in the empty ring
-					if ( hash( gx, gz ) % 7 === 0 ) {
+	const trackPieceGroup = new THREE.Group();
+	const decoGroup = new THREE.Group();
 
-						tentPositions.push( x, z, hash( gx, gz ) % 4 );
+	for ( const placement of getTrackPiecePlacements( customCells ) ) {
 
-					} else {
+		const piece = models[ placement.key ]?.clone();
+		if ( ! piece ) continue;
 
-						emptyPositions.push( x, z );
+		piece.userData.trackKey = placement.key;
+		piece.position.set( placement.x, placement.y, placement.z );
+		piece.rotation.y = placement.rotationY;
+		trackPieceGroup.add( piece );
 
-					}
+	}
 
-				} else {
+	{
 
-					forestPositions.push( x, z );
+		const emptyPositions = [];
+		const forestPositions = [];
+		const tentPositions = [];
+		const decorationPlacements = getDecorationPlacements( customCells );
 
-				}
+		for ( const placement of decorationPlacements ) {
+
+			if ( placement.key === 'decoration-empty' ) {
+
+				emptyPositions.push( placement.x, placement.z );
+
+			} else if ( placement.key === 'decoration-forest' ) {
+
+				forestPositions.push( placement.x, placement.z );
+
+			} else if ( placement.key === 'decoration-tents' ) {
+
+				tentPositions.push( placement.x, placement.z, placement.rotationY / ( Math.PI / 2 ) );
 
 			}
 
