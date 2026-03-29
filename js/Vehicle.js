@@ -11,6 +11,9 @@ const _yawQuat = new THREE.Quaternion();
 const _tmpQuat = new THREE.Quaternion();
 const _tmpScale = new THREE.Vector3();
 const _sprayPlanar = new THREE.Vector3();
+const _drivePlanar = new THREE.Vector3();
+const _viewForward = new THREE.Vector3();
+const _viewRight = new THREE.Vector3();
 const _vehicleForward = new THREE.Vector3();
 const _vehicleRight = new THREE.Vector3();
 
@@ -27,6 +30,7 @@ const AIR_CONTROL_FACTOR = 0.35;
 const CANNON_ELEVATION = 0.08;
 const WATER_RECOIL_ACCEL = 8.5;
 const JUMP_PITCH_KICK = 0.24;
+const SCREEN_DRIVE_STEER_GAIN = 2.2;
 
 function lerpAngle( a, b, t ) {
 
@@ -75,6 +79,7 @@ export class Vehicle {
 
 		this.inputX = 0;
 		this.inputZ = 0;
+		this.visualSteerInput = 0;
 
 		this.driftIntensity = 0;
 		this.isGrounded = false;
@@ -159,7 +164,7 @@ export class Vehicle {
 
 	}
 
-	update( dt, controlsInput, groundState = null ) {
+	update( dt, controlsInput, groundState = null, driveViewForward = null, driveViewRight = null ) {
 
 		this.justReset = false;
 
@@ -175,6 +180,7 @@ export class Vehicle {
 
 		this.inputX = controlsInput.driveX ?? controlsInput.x;
 		this.inputZ = controlsInput.driveZ ?? controlsInput.z;
+		this.visualSteerInput = this.inputX;
 
 		if ( groundState?.normal ) {
 
@@ -238,16 +244,77 @@ export class Vehicle {
 			dt * ( jumpHeld ? 7 : 12 )
 		);
 
-		let direction = Math.sign( this.linearSpeed );
-		if ( direction === 0 ) direction = Math.abs( this.inputZ ) > 0.1 ? Math.sign( this.inputZ ) : 1;
+		const usingTouchDrive = !! controlsInput.screenRelativeDriveActive &&
+			Math.hypot( this.inputX, this.inputZ ) > 0.1;
 
-		const steeringGrip = THREE.MathUtils.clamp( Math.abs( this.linearSpeed ), 0.2, 1.0 ) *
-			( isGrounded ? 1.0 : AIR_CONTROL_FACTOR );
+		if ( usingTouchDrive ) {
 
-		const targetAngular = - this.inputX * steeringGrip * 4 * direction;
-		this.angularSpeed = THREE.MathUtils.lerp( this.angularSpeed, targetAngular, dt * 4 );
+			_viewForward.copy( driveViewForward ?? _worldUp ).projectOnPlane( _worldUp );
+			_viewRight.copy( driveViewRight ?? _worldUp ).projectOnPlane( _worldUp );
 
-		this.heading += this.angularSpeed * dt;
+			if ( _viewForward.lengthSq() < 1e-5 ) _viewForward.set( 0, 0, 1 );
+			else _viewForward.normalize();
+
+			if ( _viewRight.lengthSq() < 1e-5 ) _viewRight.set( 1, 0, 0 );
+			else _viewRight.normalize();
+
+			_drivePlanar.set( 0, 0, 0 )
+				.addScaledVector( _viewRight, this.inputX )
+				.addScaledVector( _viewForward, this.inputZ );
+
+			if ( _drivePlanar.lengthSq() > 1e-5 ) {
+
+				_drivePlanar.normalize();
+				const targetAngle = Math.atan2( _drivePlanar.x, _drivePlanar.z );
+				const headingError = Math.atan2(
+					Math.sin( targetAngle - this.heading ),
+					Math.cos( targetAngle - this.heading )
+				);
+				this.visualSteerInput = THREE.MathUtils.clamp(
+					- headingError * SCREEN_DRIVE_STEER_GAIN,
+					- 1,
+					1
+				);
+				this.heading = lerpAngle( this.heading, targetAngle, 1 - Math.exp( - 3 * dt ) );
+
+			}
+
+			_vehicleForward.set( Math.sin( this.heading ), 0, Math.cos( this.heading ) ).normalize();
+			const cross = _vehicleForward.x * _drivePlanar.z - _vehicleForward.z * _drivePlanar.x;
+			this.inputX = - cross * 2;
+			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 1, dt * 6 );
+			this.angularSpeed = THREE.MathUtils.lerp( this.angularSpeed, 0, dt * 6 );
+
+		} else {
+
+			let direction = Math.sign( this.linearSpeed );
+			if ( direction === 0 ) direction = Math.abs( this.inputZ ) > 0.1 ? Math.sign( this.inputZ ) : 1;
+
+			const steeringGrip = THREE.MathUtils.clamp( Math.abs( this.linearSpeed ), 0.2, 1.0 ) *
+				( isGrounded ? 1.0 : AIR_CONTROL_FACTOR );
+
+			const targetAngular = - this.inputX * steeringGrip * 4 * direction;
+			this.angularSpeed = THREE.MathUtils.lerp( this.angularSpeed, targetAngular, dt * 4 );
+
+			this.heading += this.angularSpeed * dt;
+
+			const targetSpeed = this.inputZ;
+
+			if ( targetSpeed < 0 && this.linearSpeed > 0.01 ) {
+
+				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0.0, dt * 8 );
+
+			} else if ( targetSpeed < 0 ) {
+
+				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, targetSpeed / 2, dt * 2 );
+
+			} else {
+
+				this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, targetSpeed, dt * 6 );
+
+			}
+
+		}
 
 		const targetUp = ( isGrounded || hasVisualSupport ) && groundState?.normal ? this.normal : _worldUp;
 		_yawQuat.setFromAxisAngle( _worldUp, this.heading );
@@ -265,22 +332,6 @@ export class Vehicle {
 		}
 
 		this.colliding = isGrounded;
-
-		const targetSpeed = this.inputZ;
-
-		if ( targetSpeed < 0 && this.linearSpeed > 0.01 ) {
-
-			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, 0.0, dt * 8 );
-
-		} else if ( targetSpeed < 0 ) {
-
-			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, targetSpeed / 2, dt * 2 );
-
-		} else {
-
-			this.linearSpeed = THREE.MathUtils.lerp( this.linearSpeed, targetSpeed, dt * 6 );
-
-		}
 
 		this.linearSpeed *= Math.max( 0, 1 - LINEAR_DAMP * dt );
 
@@ -344,7 +395,6 @@ export class Vehicle {
 		this.container.updateMatrixWorld( true );
 		this.updateBody( dt );
 		this.updateWheels( dt, groundState?.supports ?? null );
-		this.updateCannon( dt, controlsInput );
 
 		this.driftIntensity = Math.abs( this.linearSpeed - this.acceleration ) +
 			( this.bodyNode ? Math.abs( this.bodyNode.rotation.z ) * 2 : 0 );
@@ -423,7 +473,7 @@ export class Vehicle {
 
 	}
 
-	updateCannon( dt, controlsInput ) {
+	updateCannon( dt, controlsInput, viewForward = null, viewRight = null ) {
 
 		const aimX = controlsInput.cannonX ?? 0;
 		const aimY = controlsInput.cannonY ?? 0;
@@ -434,13 +484,22 @@ export class Vehicle {
 		_vehicleForward.set( 0, 0, 1 ).applyQuaternion( this.container.quaternion ).projectOnPlane( _worldUp ).normalize();
 		_vehicleRight.set( 1, 0, 0 ).applyQuaternion( this.container.quaternion ).projectOnPlane( _worldUp ).normalize();
 
+		_viewForward.copy( viewForward ?? _vehicleForward ).projectOnPlane( _worldUp );
+		_viewRight.copy( viewRight ?? _vehicleRight ).projectOnPlane( _worldUp );
+
+		if ( _viewForward.lengthSq() < 1e-5 ) _viewForward.copy( _vehicleForward );
+		else _viewForward.normalize();
+
+		if ( _viewRight.lengthSq() < 1e-5 ) _viewRight.copy( _vehicleRight );
+		else _viewRight.normalize();
+
 		_sprayPlanar.set( 0, 0, 0 )
-			.addScaledVector( _vehicleRight, - aimX )
-			.addScaledVector( _vehicleForward, aimY );
+			.addScaledVector( _viewRight, aimX )
+			.addScaledVector( _viewForward, aimY );
 
 		if ( _sprayPlanar.lengthSq() < 1e-5 ) {
 
-			_sprayPlanar.copy( _vehicleForward );
+			_sprayPlanar.copy( _viewForward );
 
 		} else {
 
@@ -523,7 +582,7 @@ export class Vehicle {
 
 		this.bodyNode.rotation.z = lerpAngle(
 			this.bodyNode.rotation.z,
-			-( this.inputX / 5 ) * this.linearSpeed,
+			-( this.visualSteerInput / 5 ) * this.linearSpeed,
 			dt * 5
 		);
 
@@ -573,7 +632,7 @@ export class Vehicle {
 				THREE.MathUtils.clamp( dt * ( support?.isSupported ? 18 : 8 ), 0, 1 )
 			);
 
-			const targetSteer = state.axle === 'front' ? -this.inputX / 1.5 : state.restRotationY;
+			const targetSteer = state.axle === 'front' ? -this.visualSteerInput / 1.5 : state.restRotationY;
 			wheel.rotation.y = lerpAngle( wheel.rotation.y, targetSteer, dt * 10 );
 
 		}

@@ -156,6 +156,11 @@ const waterArcStart = new THREE.Vector3();
 const waterArcEnd = new THREE.Vector3();
 const waterArcVelocity = new THREE.Vector3();
 const waterLaunchVelocity = new THREE.Vector3();
+const waterWorldUp = new THREE.Vector3( 0, 1, 0 );
+const driveViewForward = new THREE.Vector3();
+const driveViewRight = new THREE.Vector3();
+const waterViewForward = new THREE.Vector3();
+const waterViewRight = new THREE.Vector3();
 const pendingWaterImpacts = [];
 const _fireSeparation = new THREE.Vector2();
 const _fireSpawnOffset = new THREE.Vector2();
@@ -920,12 +925,15 @@ async function init() {
 		elapsedTime += dt;
 
 		const input = controls.update();
+		cam.camera.getWorldDirection( driveViewForward );
+		driveViewForward.projectOnPlane( waterWorldUp ).normalize();
+		driveViewRight.set( 1, 0, 0 ).applyQuaternion( cam.camera.quaternion ).projectOnPlane( waterWorldUp ).normalize();
 
 		decorationColliderSystem?.update( sphereBody.position[ 0 ], sphereBody.position[ 2 ] );
 		updateWorld( world, contactListener, dt );
 
 		const groundState = sampleGroundState();
-		vehicle.update( dt, input, groundState );
+		vehicle.update( dt, input, groundState, driveViewForward, driveViewRight );
 		syncCollisionOrientation();
 		if ( vehicle.justReset ) {
 
@@ -968,6 +976,11 @@ async function init() {
 			vehicle.spherePos.z - 5.3
 		);
 
+		cam.update( dt, vehicle.spherePos );
+		cam.camera.getWorldDirection( waterViewForward );
+		waterViewForward.projectOnPlane( waterWorldUp ).normalize();
+		waterViewRight.set( 1, 0, 0 ).applyQuaternion( cam.camera.quaternion ).projectOnPlane( waterWorldUp ).normalize();
+		vehicle.updateCannon( dt, input, waterViewForward, waterViewRight );
 		const cannonState = vehicle.getCannonState();
 		let waterState = null;
 
@@ -1038,7 +1051,6 @@ async function init() {
 
 		}
 
-		cam.update( dt, vehicle.spherePos );
 		fireTargets.update( dt, elapsedTime );
 		effects.update( dt, vehicle, waterState );
 		scorePopups.update( dt );
