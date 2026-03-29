@@ -46,16 +46,17 @@ const GROUND_CONTACT_DISTANCE = 0.75;
 const GROUND_CONTACT_LENIENCY = 0.18;
 const GROUND_PROBE_RADIUS = 0.05;
 const GROUND_SURFACE_OVERLAP_TOLERANCE = 0.12;
-const WATER_RANGE = 26;
+const WATER_RANGE = 31.2;
 const WATER_GROUND_Y = 0.05;
-const WATER_SPEED = 12;
+const WATER_SPEED = 14.4;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
 const FIRE_EXTINGUISH_SCORE = 10;
 const INITIAL_FIRE_COUNT = 3;
-const MAX_ACTIVE_FIRES = 4;
-const FIRE_SPAWN_INTERVAL = 5.5;
+const MAX_ACTIVE_FIRES = 10;
+const FIRE_SPAWN_INTERVAL_MIN = 3;
+const FIRE_SPAWN_INTERVAL_MAX = 10;
 const FIRE_SPAWN_MIN_DISTANCE = 9;
 const FIRE_SPAWN_NEAR_DISTANCE = 22;
 const FIRE_SPAWN_FALLBACK_DISTANCE = 34;
@@ -175,6 +176,12 @@ function shuffleInPlace( values ) {
 	}
 
 	return values;
+
+}
+
+function randomFireSpawnInterval() {
+
+	return THREE.MathUtils.randFloat( FIRE_SPAWN_INTERVAL_MIN, FIRE_SPAWN_INTERVAL_MAX );
 
 }
 
@@ -685,6 +692,7 @@ async function init() {
 	let elapsedTime = 0;
 	let score = 0;
 	let fireSpawnTimer = 0;
+	let nextFireSpawnInterval = randomFireSpawnInterval();
 
 	function getCapsuleTiltNormal() {
 
@@ -1037,17 +1045,19 @@ async function init() {
 
 			fireSpawnTimer += dt;
 
-			if ( fireSpawnTimer >= FIRE_SPAWN_INTERVAL ) {
+			if ( fireSpawnTimer >= nextFireSpawnInterval ) {
 
 				fireSpawnTimer = 0;
 				const nextFire = takeNearbyFireSpawn( fireSpawnPositions, vehicle.spherePos );
 				if ( nextFire ) fireTargets.addTarget( nextFire );
+				nextFireSpawnInterval = randomFireSpawnInterval();
 
 			}
 
 		} else {
 
 			fireSpawnTimer = 0;
+			nextFireSpawnInterval = randomFireSpawnInterval();
 
 		}
 

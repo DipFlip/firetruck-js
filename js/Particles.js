@@ -308,4 +308,32 @@ export class Effects {
 		}
 
 	}
+
+	emitHitSmoke( position ) {
+
+		const particle = this.extinguishParticles[ this.extinguishEmitIndex ];
+		this.extinguishEmitIndex = ( this.extinguishEmitIndex + 1 ) % this.extinguishParticles.length;
+
+		particle.sprite.position.copy( position ).add( new THREE.Vector3(
+			( Math.random() - 0.5 ) * 0.9,
+			Math.random() * 0.45,
+			( Math.random() - 0.5 ) * 0.9
+		) );
+		particle.sprite.visible = true;
+		particle.startScale = 0.25 + Math.random() * 0.15;
+		particle.endScale = particle.startScale * ( 2.4 + Math.random() * 0.8 );
+		particle.startOpacity = 0.7;
+		particle.endOpacity = 0.0;
+		particle.velocity.set(
+			( Math.random() - 0.5 ) * 0.7,
+			1.1 + Math.random() * 1.2,
+			( Math.random() - 0.5 ) * 0.7
+		);
+		particle.maxLife = 1.0 + Math.random() * 0.8;
+		particle.life = particle.maxLife;
+		particle.damping = 0.55;
+		particle.gravity = - 0.2;
+		particle.alphaMode = 'fade';
+
+	}
 }

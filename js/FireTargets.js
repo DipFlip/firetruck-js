@@ -4,6 +4,8 @@ const FIRE_DAMAGE_PER_SECOND = 0.45;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
+const FIRE_HITBOX_SCALE = 2.0;
+const FIRE_HIT_SMOKE_COOLDOWN = 0.18;
 
 const _boxSize = new THREE.Vector3();
 const _boxCenter = new THREE.Vector3();
@@ -85,6 +87,11 @@ function createTargetVisual( woodModel, flameTexture ) {
 	const colliderBox = new THREE.Box3().copy( localBounds );
 	colliderBox.min.y = 0;
 	colliderBox.max.y += 0.75;
+	colliderBox.getCenter( _boxCenter );
+	colliderBox.getSize( _boxSize );
+	_halfExtents.copy( _boxSize ).multiplyScalar( 0.5 * FIRE_HITBOX_SCALE );
+	colliderBox.min.copy( _boxCenter ).sub( _halfExtents );
+	colliderBox.max.copy( _boxCenter ).add( _halfExtents );
 
 	group.add( wood );
 
@@ -251,6 +258,7 @@ export class FireTargetSystem {
 			flameCore: targetVisual.flameCore,
 			flameSprites: targetVisual.flameSprites,
 			fireAmount: position.fireAmount ?? 1,
+			hitSmokeCooldown: 0,
 			extinguished: false,
 		} );
 
@@ -271,6 +279,8 @@ export class FireTargetSystem {
 	update( dt, elapsedTime ) {
 
 		for ( const target of this.targets ) {
+
+			target.hitSmokeCooldown = Math.max( 0, target.hitSmokeCooldown - dt );
 
 			const fireLevel = target.extinguished ? 0 : target.fireAmount;
 			target.flameCore.visible = fireLevel > 0;
@@ -353,15 +363,24 @@ export class FireTargetSystem {
 
 		target.fireAmount = Math.max( 0, target.fireAmount - amount );
 		let extinguishPosition = null;
+		_tmpVec.copy( target.group.position );
+		_tmpVec.y += target.colliderBox.max.y * 0.45;
 
 		if ( target.fireAmount <= 0 && ! target.extinguished ) {
 
 			target.extinguished = true;
 			target.fireAmount = 0;
-			_tmpVec.copy( target.group.position );
-			_tmpVec.y += target.colliderBox.max.y * 0.6;
 			this.effects.emitExtinguishSmoke( _tmpVec, 18 );
 			extinguishPosition = _tmpVec.clone();
+
+		} else {
+
+			if ( target.hitSmokeCooldown <= 0 ) {
+
+				this.effects.emitHitSmoke( _tmpVec );
+				target.hitSmokeCooldown = FIRE_HIT_SMOKE_COOLDOWN;
+
+			}
 
 		}
 
