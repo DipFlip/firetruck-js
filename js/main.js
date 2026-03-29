@@ -598,7 +598,7 @@ async function init() {
 
 	}
 
-	const roadHalf = groundSize / 2;
+	const roadHalf = groundSize / 2 * 8;
 	rigidBody.create( world, {
 		shape: box.create( { halfExtents: [ roadHalf, 0.01, roadHalf ] } ),
 		motionType: MotionType.STATIC,
