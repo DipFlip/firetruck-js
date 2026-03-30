@@ -86,6 +86,7 @@ export function buildWallColliders( world, debugGroup, customCells, collisionGro
 			} );
 
 			wallProbeBoxes.push( {
+				kind: 'corner',
 				centerX: position[ 0 ],
 				centerY: position[ 1 ],
 				centerZ: position[ 2 ],
@@ -138,6 +139,7 @@ export function buildWallColliders( world, debugGroup, customCells, collisionGro
 				} );
 
 					wallProbeBoxes.push( {
+						kind: 'straight',
 						centerX: position[ 0 ],
 						centerY: position[ 1 ],
 						centerZ: position[ 2 ],
@@ -168,7 +170,7 @@ export function buildWallColliders( world, debugGroup, customCells, collisionGro
 
 }
 
-function collectNodeVerticesInRootSpace( root, node ) {
+function collectNodeVerticesInRootSpace( root, node, measurementScale = GRID_SCALE ) {
 
 	root.updateMatrixWorld( true );
 	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
@@ -187,9 +189,9 @@ function collectNodeVerticesInRootSpace( root, node ) {
 
 			_tmpVec3A.fromBufferAttribute( positionAttr, i ).applyMatrix4( toLocal );
 			positions.push(
-				_tmpVec3A.x * GRID_SCALE,
-				_tmpVec3A.y * GRID_SCALE,
-				_tmpVec3A.z * GRID_SCALE
+				_tmpVec3A.x * measurementScale,
+				_tmpVec3A.y * measurementScale,
+				_tmpVec3A.z * measurementScale
 			);
 
 		}
@@ -200,7 +202,7 @@ function collectNodeVerticesInRootSpace( root, node ) {
 
 }
 
-function buildNodeDebugGeometryInRootSpace( root, node ) {
+function buildNodeDebugGeometryInRootSpace( root, node, measurementScale = GRID_SCALE ) {
 
 	root.updateMatrixWorld( true );
 	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
@@ -220,9 +222,9 @@ function buildNodeDebugGeometryInRootSpace( root, node ) {
 
 			_tmpVec3A.fromBufferAttribute( positionAttr, vertexIndex ).applyMatrix4( toLocal );
 			positions.push(
-				_tmpVec3A.x * GRID_SCALE,
-				_tmpVec3A.y * GRID_SCALE,
-				_tmpVec3A.z * GRID_SCALE
+				_tmpVec3A.x * measurementScale,
+				_tmpVec3A.y * measurementScale,
+				_tmpVec3A.z * measurementScale
 			);
 
 		}
@@ -613,8 +615,9 @@ export function createVehicleCollisionProfile( model ) {
 	const colliderNode = findNamedNode( model, ( name ) => name.includes( 'collider' ) );
 	const sphereAnchorNode = findNamedNode( model, ( name ) => name === 'sphereanchor' || name === 'driveball' || name === 'ballanchor' );
 	const profileSource = colliderNode || findNamedNode( model, ( name ) => name === 'body' ) || model;
-	const bounds = computeNodeBoundsInRootSpace( model, profileSource );
-	const sphereAnchor = sphereAnchorNode ? computeNodeOriginInRootSpace( model, sphereAnchorNode ).clone() : new THREE.Vector3( 0, VEHICLE_SPHERE_RADIUS, 0 );
+	const measurementScale = getRootUniformScale( model );
+	const bounds = computeNodeBoundsInRootSpace( model, profileSource, measurementScale );
+	const sphereAnchor = sphereAnchorNode ? computeNodeOriginInRootSpace( model, sphereAnchorNode, measurementScale ).clone() : new THREE.Vector3( 0, VEHICLE_SPHERE_RADIUS, 0 );
 
 	if ( ! bounds || bounds.isEmpty() ) {
 
@@ -646,7 +649,7 @@ export function createVehicleCollisionProfile( model ) {
 
 	const radius = Math.max( Math.min( _tmpVec3B.x, _tmpVec3B.y ) * 0.45, 0.25 );
 	const halfLength = Math.max( _tmpVec3B.z * 0.5, radius );
-	const hullPositions = colliderNode ? collectNodeVerticesInRootSpace( model, colliderNode ) : [];
+	const hullPositions = colliderNode ? collectNodeVerticesInRootSpace( model, colliderNode, measurementScale ) : [];
 
 	if ( hullPositions.length >= 12 ) {
 
@@ -677,7 +680,7 @@ export function createVehicleCollisionProfile( model ) {
 			sphereAnchorX: sphereAnchor.x,
 			sphereAnchorY: sphereAnchor.y,
 			sphereAnchorZ: sphereAnchor.z,
-			debugGeometry: buildNodeDebugGeometryInRootSpace( model, colliderNode ),
+			debugGeometry: buildNodeDebugGeometryInRootSpace( model, colliderNode, measurementScale ),
 			shape,
 		};
 
@@ -769,7 +772,15 @@ function findNamedNode( root, matcher ) {
 
 }
 
-function computeNodeBoundsInRootSpace( root, node ) {
+function getRootUniformScale( root ) {
+
+	root.updateMatrixWorld( true );
+	root.getWorldScale( _tmpVec3C );
+	return _tmpVec3C.x;
+
+}
+
+function computeNodeBoundsInRootSpace( root, node, measurementScale = 1 ) {
 
 	root.updateMatrixWorld( true );
 	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
@@ -788,7 +799,7 @@ function computeNodeBoundsInRootSpace( root, node ) {
 
 		for ( let i = 0; i < positionAttr.count; i ++ ) {
 
-			_tmpVec3A.fromBufferAttribute( positionAttr, i ).applyMatrix4( toLocal );
+			_tmpVec3A.fromBufferAttribute( positionAttr, i ).applyMatrix4( toLocal ).multiplyScalar( measurementScale );
 			bounds.expandByPoint( _tmpVec3A );
 
 		}
@@ -799,11 +810,11 @@ function computeNodeBoundsInRootSpace( root, node ) {
 
 }
 
-function computeNodeOriginInRootSpace( root, node ) {
+function computeNodeOriginInRootSpace( root, node, measurementScale = 1 ) {
 
 	root.updateMatrixWorld( true );
 	const toRootSpace = new THREE.Matrix4().copy( root.matrixWorld ).invert();
-	return _tmpVec3A.set( 0, 0, 0 ).applyMatrix4( node.matrixWorld ).applyMatrix4( toRootSpace );
+	return _tmpVec3A.set( 0, 0, 0 ).applyMatrix4( node.matrixWorld ).applyMatrix4( toRootSpace ).multiplyScalar( measurementScale );
 
 }
 
@@ -811,7 +822,8 @@ export function createVehicleWallProbe( model ) {
 
 	const colliderNode = findNamedNode( model, ( name ) => name.includes( 'collider' ) );
 	const probeSource = colliderNode || findNamedNode( model, ( name ) => name === 'body' ) || model;
-	const bounds = computeNodeBoundsInRootSpace( model, probeSource );
+	const measurementScale = getRootUniformScale( model );
+	const bounds = computeNodeBoundsInRootSpace( model, probeSource, measurementScale );
 
 	if ( ! bounds || bounds.isEmpty() ) {
 
@@ -827,35 +839,47 @@ export function createVehicleWallProbe( model ) {
 	bounds.getCenter( _tmpVec3A );
 	bounds.getSize( _tmpVec3B );
 
-	const probeRadius = Math.max( Math.min( _tmpVec3B.x * 0.5, _tmpVec3B.z * 0.25 ), 0.25 );
+	const halfWidth = _tmpVec3B.x * 0.5;
+	const probeRadius = THREE.MathUtils.clamp(
+		Math.min( _tmpVec3B.x * 0.28, _tmpVec3B.z * 0.16 ),
+		0.18,
+		0.34
+	);
 	// Keep the bumper helpers above the rolling sphere so low obstacles still feel climbable.
 	const bumperBottom = Math.max( bounds.min.y + _tmpVec3B.y * BUMPER_CLEARANCE_RATIO, MIN_BUMPER_BOTTOM );
 	const bumperHeight = Math.max( Math.min( _tmpVec3B.y * BUMPER_HEIGHT_RATIO, _tmpVec3B.y ), MIN_BUMPER_HALF_HEIGHT * 2 );
 	const bumperTop = Math.min( bounds.max.y, bumperBottom + bumperHeight );
 	const halfY = Math.max( ( bumperTop - bumperBottom ) * 0.5, MIN_BUMPER_HALF_HEIGHT );
 	const offsetY = THREE.MathUtils.clamp( bumperBottom + halfY, bounds.min.y + halfY, bounds.max.y - halfY );
+	const sideOffsetX = Math.max( halfWidth - probeRadius, 0 );
 	const frontOffsetZ = Math.max( bounds.max.z - probeRadius, _tmpVec3A.z );
 	const rearOffsetZ = Math.min( bounds.min.z + probeRadius, _tmpVec3A.z );
+	const lateralOffsets = sideOffsetX > 1e-4 ? [ - sideOffsetX, 0, sideOffsetX ] : [ 0 ];
+	const probes = [];
+
+	for ( const offsetX of lateralOffsets ) {
+
+		probes.push( {
+			offsetX: _tmpVec3A.x + offsetX,
+			offsetY,
+			offsetZ: frontOffsetZ,
+			radius: probeRadius,
+			halfY,
+			halfLength: probeRadius,
+		} );
+		probes.push( {
+			offsetX: _tmpVec3A.x + offsetX,
+			offsetY,
+			offsetZ: rearOffsetZ,
+			radius: probeRadius,
+			halfY,
+			halfLength: probeRadius,
+		} );
+
+	}
 
 	return {
-		probes: [
-			{
-				offsetX: _tmpVec3A.x,
-				offsetY,
-				offsetZ: frontOffsetZ,
-				radius: probeRadius,
-				halfY,
-				halfLength: probeRadius,
-			},
-			{
-				offsetX: _tmpVec3A.x,
-				offsetY,
-				offsetZ: rearOffsetZ,
-				radius: probeRadius,
-				halfY,
-				halfLength: probeRadius,
-			},
-		],
+		probes,
 	};
 
 }
@@ -933,6 +957,8 @@ export function resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicle
 		let largestPushLengthSq = 0;
 
 		for ( const wall of wallProbeBoxes ) {
+
+			if ( wall.kind === 'corner' ) continue;
 
 				for ( const probe of probes ) {
 

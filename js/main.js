@@ -6,7 +6,7 @@ import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
 import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, getDecorationPlacements, getTrackPiecePlacements, CELL_RAW, GRID_SCALE } from './Track.js';
-import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, createDecorationColliderSystem, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint } from './Physics.js';
+import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, createDecorationColliderSystem, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint, createVehicleWallProbe, resolveVehicleWallProbe } from './Physics.js';
 import { Effects } from './Particles.js';
 import { GameAudio } from './Audio.js';
 import { FireTargetSystem } from './FireTargets.js';
@@ -53,6 +53,7 @@ const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
 const FIRE_EXTINGUISH_SCORE = 10;
+const FIRE_START_AMOUNT = 0.5;
 const INITIAL_FIRE_COUNT = 3;
 const MAX_ACTIVE_FIRES = 10;
 const FIRE_SPAWN_INTERVAL_MIN = 3;
@@ -334,7 +335,7 @@ function buildFireSpawnPositions( customCells, bounds, spawn ) {
 			x: fireTrackWorld.x,
 			y: fireTrackWorld.y,
 			z: fireTrackWorld.z,
-			fireAmount: 1,
+			fireAmount: FIRE_START_AMOUNT,
 		}, 0 );
 
 	} else if ( spawn ) {
@@ -343,7 +344,7 @@ function buildFireSpawnPositions( customCells, bounds, spawn ) {
 			x: spawn.position[ 0 ] - 4.5,
 			y: 0,
 			z: spawn.position[ 2 ] + 4.5,
-			fireAmount: 1,
+			fireAmount: FIRE_START_AMOUNT,
 		}, 0 );
 
 	}
@@ -642,6 +643,7 @@ async function init() {
 
 	const vehicleModel = models[ PLAYER_VEHICLE_MODEL ];
 	const vehicleCollision = createVehicleCollisionProfile( vehicleModel );
+	const vehicleWallProbe = createVehicleWallProbe( vehicleModel );
 	const collisionBodyQuat = new THREE.Quaternion().copy( vehicle.container.quaternion ).multiply( vehicleCollision.alignment );
 	debugProbeBox.geometry.dispose();
 	debugProbeBox.geometry = vehicleCollision.debugGeometry;
@@ -719,6 +721,24 @@ async function init() {
 			_collisionQuat.z,
 			_collisionQuat.w
 		], false );
+		rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
+
+	}
+
+	function syncCollisionPosition( resetMotion = false ) {
+
+		debugProbeOffset.set(
+			vehicleCollision.bodyOffsetX - vehicleCollision.sphereAnchorX,
+			vehicleCollision.bodyOffsetY - vehicleCollision.sphereAnchorY,
+			vehicleCollision.bodyOffsetZ - vehicleCollision.sphereAnchorZ
+		).applyQuaternion( vehicle.container.quaternion );
+		rigidBody.setPosition( world, collisionBody, [
+			vehicle.spherePos.x + debugProbeOffset.x,
+			vehicle.spherePos.y + debugProbeOffset.y,
+			vehicle.spherePos.z + debugProbeOffset.z
+		], false );
+
+		if ( resetMotion ) rigidBody.setLinearVelocity( world, collisionBody, [ 0, 0, 0 ] );
 		rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
 
 	}
@@ -943,20 +963,16 @@ async function init() {
 		const groundState = sampleGroundState();
 		vehicle.update( dt, input, groundState, driveViewForward, driveViewRight );
 		syncCollisionOrientation();
+		const wallProbeImpactVelocity = resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicleWallProbe );
+		if ( wallProbeImpactVelocity > 0 ) {
+
+			syncCollisionPosition();
+			audio.playImpact( wallProbeImpactVelocity );
+
+		}
 		if ( vehicle.justReset ) {
 
-			debugProbeOffset.set(
-				vehicleCollision.bodyOffsetX - vehicleCollision.sphereAnchorX,
-				vehicleCollision.bodyOffsetY - vehicleCollision.sphereAnchorY,
-				vehicleCollision.bodyOffsetZ - vehicleCollision.sphereAnchorZ
-			).applyQuaternion( vehicle.container.quaternion );
-			rigidBody.setPosition( world, collisionBody, [
-				vehicle.spherePos.x + debugProbeOffset.x,
-				vehicle.spherePos.y + debugProbeOffset.y,
-				vehicle.spherePos.z + debugProbeOffset.z
-			], false );
-			rigidBody.setLinearVelocity( world, collisionBody, [ 0, 0, 0 ] );
-			rigidBody.setAngularVelocity( world, collisionBody, [ 0, 0, 0 ] );
+			syncCollisionPosition( true );
 
 		}
 		debugSphere.position.copy( vehicle.spherePos );

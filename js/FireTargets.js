@@ -4,6 +4,7 @@ const FIRE_DAMAGE_PER_SECOND = 0.45;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
+const DEFAULT_FIRE_AMOUNT = 0.5;
 const FIRE_HITBOX_SCALE = 2.0;
 const FIRE_HIT_SMOKE_COOLDOWN = 0.18;
 
@@ -257,7 +258,7 @@ export class FireTargetSystem {
 			debugCollider: targetVisual.debugCollider,
 			flameCore: targetVisual.flameCore,
 			flameSprites: targetVisual.flameSprites,
-			fireAmount: position.fireAmount ?? 1,
+			fireAmount: position.fireAmount ?? DEFAULT_FIRE_AMOUNT,
 			hitSmokeCooldown: 0,
 			extinguished: false,
 		} );
