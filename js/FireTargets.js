@@ -393,6 +393,38 @@ export class FireTargetSystem {
 
 	}
 
+	getAimAssistTarget( searchCenter, searchRadius ) {
+
+		const radiusSq = searchRadius * searchRadius;
+		let bestTarget = null;
+		let bestDistanceSq = Infinity;
+		let bestPoint = null;
+
+		for ( const target of this.targets ) {
+
+			if ( target.extinguished || target.fireAmount <= 0 ) continue;
+
+			target.group.updateWorldMatrix( true, false );
+			target.flameCore.getWorldPosition( _tmpVec );
+			const distanceSq = _tmpVec.distanceToSquared( searchCenter );
+
+			if ( distanceSq > radiusSq || distanceSq >= bestDistanceSq ) continue;
+
+			bestTarget = target;
+			bestDistanceSq = distanceSq;
+			bestPoint = _tmpVec.clone();
+
+		}
+
+		if ( ! bestTarget || ! bestPoint ) return null;
+
+		return {
+			target: bestTarget,
+			point: bestPoint,
+		};
+
+	}
+
 	getActiveCount() {
 
 		let count = 0;
