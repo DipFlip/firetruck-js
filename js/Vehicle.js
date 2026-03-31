@@ -507,10 +507,16 @@ export class Vehicle {
 
 		}
 
-		this.cannonDirection.copy( _sprayPlanar ).multiplyScalar( 1 - CANNON_ELEVATION );
-		this.cannonDirection.y = CANNON_ELEVATION;
-		this.cannonDirection.normalize();
+		_sprayPlanar.multiplyScalar( 1 - CANNON_ELEVATION );
+		_sprayPlanar.y = CANNON_ELEVATION;
+		_sprayPlanar.normalize();
+		this.setCannonDirection( _sprayPlanar );
 
+	}
+
+	setCannonDirection( direction ) {
+
+		this.cannonDirection.copy( direction ).normalize();
 		_tmpQuat.setFromUnitVectors( _forward.set( 0, 0, 1 ), this.cannonDirection );
 		this.cannonYawPivot.quaternion.copy( this.container.quaternion ).invert().multiply( _tmpQuat );
 

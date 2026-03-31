@@ -52,7 +52,8 @@ const WATER_SPEED = 14.4;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
-const WATER_AIM_ASSIST_RADIUS = 2.25;
+const WATER_AIM_ASSIST_RADIUS = 3.0;
+const WATER_AIM_ASSIST_DISTANCE = 5.0;
 const FIRE_EXTINGUISH_SCORE = 10;
 const FIRE_START_AMOUNT = 0.5;
 const INITIAL_FIRE_COUNT = 3;
@@ -171,14 +172,15 @@ const waterArcStart = new THREE.Vector3();
 const waterArcEnd = new THREE.Vector3();
 const waterArcVelocity = new THREE.Vector3();
 const waterLaunchVelocity = new THREE.Vector3();
-const waterAssistVelocity = new THREE.Vector3();
 const waterWorldUp = new THREE.Vector3( 0, 1, 0 );
 const driveViewForward = new THREE.Vector3();
 const driveViewRight = new THREE.Vector3();
 const waterViewForward = new THREE.Vector3();
 const waterViewRight = new THREE.Vector3();
 const waterAimAssistPoint = new THREE.Vector3();
-const waterAimAssistDirection = new THREE.Vector3();
+const waterAimAssistOffset = new THREE.Vector3();
+const waterAimAssistRelativeVelocity = new THREE.Vector3();
+const waterAimAssistLaunchVelocity = new THREE.Vector3();
 const waterAssistNormal = new THREE.Vector3();
 const pendingWaterImpacts = [];
 const _fireSeparation = new THREE.Vector2();
@@ -306,20 +308,87 @@ function computeFallbackWaterImpact( origin, launchVelocity, maxRange ) {
 
 }
 
-function createAimAssistHit( assistTarget, origin, launchVelocity ) {
+function solveAimAssistShot( origin, targetPoint, inheritedVelocity, launchSpeed ) {
 
-	waterAssistNormal.copy( origin ).sub( assistTarget.point );
-	if ( waterAssistNormal.lengthSq() > 1e-6 ) waterAssistNormal.normalize();
-	else waterAssistNormal.set( 0, 1, 0 );
+	waterAimAssistOffset.copy( targetPoint ).sub( origin );
 
-	return {
-		hit: true,
-		target: assistTarget.target,
-		impactPoint: assistTarget.point.clone(),
-		impactNormal: waterAssistNormal.clone(),
-		distance: origin.distanceTo( assistTarget.point ),
-		travelTime: origin.distanceTo( assistTarget.point ) / Math.max( launchVelocity.length(), 1e-4 ),
-	};
+	function relativeSpeedError( time ) {
+
+		waterAimAssistRelativeVelocity.copy( waterAimAssistOffset ).divideScalar( time ).sub( inheritedVelocity );
+		waterAimAssistRelativeVelocity.y += 0.5 * WATER_GRAVITY * time;
+		return waterAimAssistRelativeVelocity.length() - launchSpeed;
+
+	}
+
+	const minTime = 0.08;
+	const maxTime = Math.max( 2.25, WATER_RANGE / Math.max( launchSpeed, 1e-4 ) );
+	let prevTime = minTime;
+	let prevError = relativeSpeedError( prevTime );
+
+	for ( let i = 1; i <= 48; i ++ ) {
+
+		const time = THREE.MathUtils.lerp( minTime, maxTime, i / 48 );
+		const error = relativeSpeedError( time );
+
+		if ( prevError === 0 || error === 0 || prevError < 0 !== error < 0 ) {
+
+			let lowTime = prevTime;
+			let highTime = time;
+			let lowError = prevError;
+
+			for ( let iteration = 0; iteration < 14; iteration ++ ) {
+
+				const midTime = ( lowTime + highTime ) * 0.5;
+				const midError = relativeSpeedError( midTime );
+
+				if ( Math.abs( midError ) <= 1e-3 ) {
+
+					lowTime = highTime = midTime;
+					break;
+
+				}
+
+				if ( lowError < 0 !== midError < 0 ) {
+
+					highTime = midTime;
+
+				} else {
+
+					lowTime = midTime;
+					lowError = midError;
+
+				}
+
+			}
+
+			const travelTime = ( lowTime + highTime ) * 0.5;
+			waterAimAssistRelativeVelocity.copy( waterAimAssistOffset ).divideScalar( travelTime ).sub( inheritedVelocity );
+			waterAimAssistRelativeVelocity.y += 0.5 * WATER_GRAVITY * travelTime;
+
+			if ( waterAimAssistRelativeVelocity.lengthSq() <= 1e-8 ) return null;
+
+			waterAimAssistLaunchVelocity.copy( waterAimAssistRelativeVelocity ).add( inheritedVelocity );
+
+			waterAssistNormal.copy( origin ).sub( targetPoint );
+			if ( waterAssistNormal.lengthSq() > 1e-6 ) waterAssistNormal.normalize();
+			else waterAssistNormal.set( 0, 1, 0 );
+
+			return {
+				aimDirection: waterAimAssistRelativeVelocity.clone().normalize(),
+				launchVelocity: waterAimAssistLaunchVelocity.clone(),
+				travelTime,
+				impactPoint: targetPoint.clone(),
+				impactNormal: waterAssistNormal.clone(),
+			};
+
+		}
+
+		prevTime = time;
+		prevError = error;
+
+	}
+
+	return null;
 
 }
 
@@ -1040,35 +1109,42 @@ async function init() {
 		waterViewForward.projectOnPlane( waterWorldUp ).normalize();
 		waterViewRight.set( 1, 0, 0 ).applyQuaternion( cam.camera.quaternion ).projectOnPlane( waterWorldUp ).normalize();
 		vehicle.updateCannon( dt, input, waterViewForward, waterViewRight );
-		const cannonState = vehicle.getCannonState();
-		waterAssistVelocity.copy( cannonState.direction ).multiplyScalar( WATER_SPEED ).add( cannonState.vehicleVelocity );
-		const aimAssistImpact = computeFallbackWaterImpact( cannonState.origin, waterAssistVelocity, WATER_RANGE );
-		waterAimAssistPoint.copy( aimAssistImpact.impactPoint );
+		let cannonState = vehicle.getCannonState();
+		waterAimAssistPoint.copy( cannonState.origin ).addScaledVector( cannonState.direction, WATER_AIM_ASSIST_DISTANCE );
+		const aimAssistTarget = fireTargets.getAimAssistTarget( waterAimAssistPoint, WATER_AIM_ASSIST_RADIUS );
+		const aimAssistShot = aimAssistTarget ?
+			solveAimAssistShot( cannonState.origin, aimAssistTarget.point, cannonState.vehicleVelocity, WATER_SPEED ) :
+			null;
+
+		if ( aimAssistShot ) {
+
+			vehicle.setCannonDirection( aimAssistShot.aimDirection );
+			cannonState = vehicle.getCannonState();
+
+		}
+
 		debugAimAssistSphere.position.copy( waterAimAssistPoint );
 		debugAimAssistSphere.visible = debugSphereToggle.checked;
 		let waterState = null;
 
 		if ( input.water ) {
 
-			const aimAssistTarget = fireTargets.getAimAssistTarget( waterAimAssistPoint, WATER_AIM_ASSIST_RADIUS );
-			let waterDirection = cannonState.direction;
+			if ( aimAssistShot ) waterLaunchVelocity.copy( aimAssistShot.launchVelocity );
+			else waterLaunchVelocity.copy( cannonState.direction ).multiplyScalar( WATER_SPEED ).add( cannonState.vehicleVelocity );
+			vehicle.applyWaterRecoil( cannonState.direction, dt );
+			let targetHit = fireTargets.spray( cannonState.origin, waterLaunchVelocity, WATER_RANGE );
+			if ( ! targetHit && aimAssistShot && aimAssistTarget ) {
 
-			if ( aimAssistTarget ) {
-
-				waterAimAssistDirection.copy( aimAssistTarget.point ).sub( cannonState.origin );
-				if ( waterAimAssistDirection.lengthSq() > 1e-6 ) {
-
-					waterAimAssistDirection.normalize();
-					waterDirection = waterAimAssistDirection;
-
-				}
+				targetHit = {
+					hit: true,
+					target: aimAssistTarget.target,
+					impactPoint: aimAssistShot.impactPoint.clone(),
+					impactNormal: aimAssistShot.impactNormal.clone(),
+					distance: cannonState.origin.distanceTo( aimAssistShot.impactPoint ),
+					travelTime: aimAssistShot.travelTime,
+				};
 
 			}
-
-			waterLaunchVelocity.copy( waterDirection ).multiplyScalar( WATER_SPEED ).add( cannonState.vehicleVelocity );
-			vehicle.applyWaterRecoil( waterDirection, dt );
-			let targetHit = fireTargets.spray( cannonState.origin, waterLaunchVelocity, WATER_RANGE );
-			if ( ! targetHit && aimAssistTarget ) targetHit = createAimAssistHit( aimAssistTarget, cannonState.origin, waterLaunchVelocity );
 			const impact = targetHit || computeFallbackWaterImpact( cannonState.origin, waterLaunchVelocity, WATER_RANGE );
 
 			pendingWaterImpacts.push( {
@@ -1083,7 +1159,7 @@ async function init() {
 			waterState = {
 				active: true,
 				origin: cannonState.origin,
-				direction: waterDirection,
+				direction: cannonState.direction,
 				velocity: waterLaunchVelocity.clone(),
 			};
 
