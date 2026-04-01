@@ -4,6 +4,7 @@ const FIRE_DAMAGE_PER_SECOND = 0.45;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
+const FLAME_HORIZONTAL_SPREAD = 1.15;
 const DEFAULT_FIRE_AMOUNT = 0.25;
 const FIRE_HITBOX_SCALE = 2.4;
 const FIRE_HIT_SMOKE_COOLDOWN = 0.18;
@@ -138,7 +139,11 @@ function createTargetVisual( woodModel, flameTexture ) {
 		new THREE.Vector3( 0.0, colliderBox.max.y + 0.02, -0.02 ),
 		new THREE.Vector3( -0.14, colliderBox.max.y + 0.22, 0.08 ),
 		new THREE.Vector3( 0.16, colliderBox.max.y + 0.3, -0.06 ),
-	];
+	].map( ( offset ) => new THREE.Vector3(
+		offset.x * FLAME_HORIZONTAL_SPREAD,
+		offset.y,
+		offset.z * FLAME_HORIZONTAL_SPREAD
+	) );
 	const flameColors = [ 0xff7a1a, 0xff8f2e, 0xfff1bf, 0xffa144, 0xffd06e ];
 	const flameScales = [ 0.95, 1.05, 0.72, 0.82, 0.68 ];
 
@@ -153,7 +158,7 @@ function createTargetVisual( woodModel, flameTexture ) {
 			blending: THREE.AdditiveBlending,
 		} ) );
 		sprite.position.copy( flameOffsets[ i ] );
-		sprite.scale.set( 1.84, 3.22, 1 );
+		sprite.scale.set( 1.84 * FLAME_HORIZONTAL_SPREAD, 3.22, 1 );
 		flameGroup.add( sprite );
 		flameSprites.push( {
 			sprite,
@@ -299,7 +304,11 @@ export class FireTargetSystem {
 				flame.sprite.position.x += Math.sin( elapsedTime * 2.3 + flame.phase ) * flame.sway;
 				flame.sprite.position.z += Math.cos( elapsedTime * 2.7 + flame.phase ) * flame.sway * 0.55;
 				flame.sprite.position.y += Math.sin( elapsedTime * 3.8 + flame.phase ) * 0.14 + fireLevel * 0.08;
-				flame.sprite.scale.set( flame.scale * pulse * 1.05, flame.scale * pulse * 2.25, 1 );
+				flame.sprite.scale.set(
+					flame.scale * pulse * 1.05 * FLAME_HORIZONTAL_SPREAD,
+					flame.scale * pulse * 2.25,
+					1
+				);
 				flame.sprite.material.opacity = 0.28 + fireLevel * 0.62;
 
 			}

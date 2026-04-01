@@ -428,7 +428,7 @@ export class Vehicle {
 		const bounds = new THREE.Box3().setFromObject( wheel );
 		const size = new THREE.Vector3();
 		bounds.getSize( size );
-		const localCenter = this.container.worldToLocal( wheel.getWorldPosition( new THREE.Vector3() ) );
+		const localCenter = this.container.worldToLocal( bounds.getCenter( new THREE.Vector3() ) );
 		const radius = Math.max( Math.max( size.y, size.z ) * 0.5, 0.12 );
 
 		this.wheelStates.push( {
@@ -618,7 +618,9 @@ export class Vehicle {
 
 			if ( support?.isSupported ) {
 
-				_tmpVecC.copy( support.contactPoint ).addScaledVector( visualUp, state.radius );
+				const supportUpDot = Math.max( support.normal?.dot( visualUp ) ?? 1, 0.55 );
+				const supportLift = state.radius / supportUpDot;
+				_tmpVecC.copy( support.contactPoint ).addScaledVector( visualUp, supportLift );
 				this.container.worldToLocal( _tmpVecC );
 				targetY = THREE.MathUtils.clamp(
 					_tmpVecC.y,
