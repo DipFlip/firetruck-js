@@ -202,6 +202,63 @@ function collectTaggedRoots( root, prefix ) {
 
 }
 
+export function getForestTreeSpawnPlacements( models, customCells ) {
+
+	const src = models?.[ 'decoration-forest' ];
+	if ( ! src ) return [];
+
+	const forestPlacements = getDecorationPlacements( customCells )
+		.filter( ( placement ) => placement.key === 'decoration-forest' );
+	if ( forestPlacements.length === 0 ) return [];
+
+	const base = src.clone();
+	base.updateMatrixWorld( true );
+
+	const treeRoots = collectTaggedRoots( base, 'tree.' );
+	const treeBounds = new THREE.Box3();
+	const localTreeAnchors = treeRoots.map( ( treeRoot ) => {
+
+		treeBounds.setFromObject( treeRoot );
+		const anchor = treeBounds.getCenter( new THREE.Vector3() );
+		anchor.y = treeBounds.min.y;
+		return {
+			name: treeRoot.name,
+			anchor,
+		};
+
+	} );
+	const placementTransform = new THREE.Object3D();
+	const worldTreeAnchor = new THREE.Vector3();
+	const result = [];
+
+	for ( const placement of forestPlacements ) {
+
+		placementTransform.position.set( placement.x, placement.y, placement.z );
+		placementTransform.rotation.set( 0, placement.rotationY, 0 );
+		placementTransform.updateMatrixWorld( true );
+
+		for ( const tree of localTreeAnchors ) {
+
+			if ( ! shouldIncludeTreeNode( tree.name, placement ) ) continue;
+
+			worldTreeAnchor.copy( tree.anchor ).applyMatrix4( placementTransform.matrixWorld );
+			result.push( {
+				gx: placement.gx,
+				gz: placement.gz,
+				x: worldTreeAnchor.x * GRID_SCALE,
+				y: worldTreeAnchor.y * GRID_SCALE - 0.5,
+				z: worldTreeAnchor.z * GRID_SCALE,
+				rotationY: placement.rotationY,
+			} );
+
+		}
+
+	}
+
+	return result;
+
+}
+
 export function getDecorationPlacements( customCells ) {
 
 	const placements = [];

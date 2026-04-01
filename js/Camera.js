@@ -7,7 +7,7 @@ export class Camera {
 		this.camera = new THREE.PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.1, 60 );
 
 		// Matches Godot View: 45° azimuth, 35° elevation, distance 16
-		this.offset = new THREE.Vector3( 9.27, 9.18, 9.27 );
+		this.offset = new THREE.Vector3( 11.46, 11.34, 11.46 );
 		this.targetPosition = new THREE.Vector3();
 
 		this.camera.position.copy( this.offset );

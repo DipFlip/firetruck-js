@@ -4,8 +4,8 @@ const FIRE_DAMAGE_PER_SECOND = 0.45;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
-const DEFAULT_FIRE_AMOUNT = 0.5;
-const FIRE_HITBOX_SCALE = 2.0;
+const DEFAULT_FIRE_AMOUNT = 0.25;
+const FIRE_HITBOX_SCALE = 2.4;
 const FIRE_HIT_SMOKE_COOLDOWN = 0.18;
 
 const _boxSize = new THREE.Vector3();
@@ -26,6 +26,7 @@ const _segmentEnd = new THREE.Vector3();
 const _segmentDir = new THREE.Vector3();
 const _segmentVelocity = new THREE.Vector3();
 const _localSegmentHit = new THREE.Vector3();
+const _worldAimBox = new THREE.Box3();
 
 function createFlameTexture() {
 
@@ -58,43 +59,56 @@ function createFlameTexture() {
 function createTargetVisual( woodModel, flameTexture ) {
 
 	const group = new THREE.Group();
-	const wood = woodModel.clone();
-	wood.traverse( ( child ) => {
+	let colliderBox;
 
-		if ( ! child.isMesh ) return;
-		child.castShadow = true;
-		child.receiveShadow = true;
+	if ( woodModel ) {
 
-	} );
+		const wood = woodModel.clone();
+		wood.traverse( ( child ) => {
 
-	wood.updateMatrixWorld( true );
-	const rawBounds = new THREE.Box3().setFromObject( wood );
-	const rawSize = rawBounds.getSize( new THREE.Vector3() );
-	const targetWidth = 1.05;
-	const scale = targetWidth / Math.max( rawSize.x, rawSize.z, 1e-4 );
-	wood.scale.setScalar( scale );
-	wood.updateMatrixWorld( true );
+			if ( ! child.isMesh ) return;
+			child.castShadow = true;
+			child.receiveShadow = true;
 
-	const scaledBounds = new THREE.Box3().setFromObject( wood );
-	const scaledCenter = scaledBounds.getCenter( new THREE.Vector3() );
-	wood.position.sub( scaledCenter );
-	wood.position.y -= scaledBounds.min.y;
-	wood.updateMatrixWorld( true );
+		} );
 
-	const localBounds = new THREE.Box3().setFromObject( wood );
-	localBounds.getSize( _boxSize );
-	localBounds.getCenter( _boxCenter );
+		wood.updateMatrixWorld( true );
+		const rawBounds = new THREE.Box3().setFromObject( wood );
+		const rawSize = rawBounds.getSize( new THREE.Vector3() );
+		const targetWidth = 1.05;
+		const scale = targetWidth / Math.max( rawSize.x, rawSize.z, 1e-4 );
+		wood.scale.setScalar( scale );
+		wood.updateMatrixWorld( true );
 
-	const colliderBox = new THREE.Box3().copy( localBounds );
-	colliderBox.min.y = 0;
-	colliderBox.max.y += 0.75;
-	colliderBox.getCenter( _boxCenter );
-	colliderBox.getSize( _boxSize );
-	_halfExtents.copy( _boxSize ).multiplyScalar( 0.5 * FIRE_HITBOX_SCALE );
-	colliderBox.min.copy( _boxCenter ).sub( _halfExtents );
-	colliderBox.max.copy( _boxCenter ).add( _halfExtents );
+		const scaledBounds = new THREE.Box3().setFromObject( wood );
+		const scaledCenter = scaledBounds.getCenter( new THREE.Vector3() );
+		wood.position.sub( scaledCenter );
+		wood.position.y -= scaledBounds.min.y;
+		wood.updateMatrixWorld( true );
 
-	group.add( wood );
+		const localBounds = new THREE.Box3().setFromObject( wood );
+		localBounds.getSize( _boxSize );
+		localBounds.getCenter( _boxCenter );
+
+		colliderBox = new THREE.Box3().copy( localBounds );
+		colliderBox.min.y = 0;
+		colliderBox.max.y += 0.75;
+		colliderBox.getCenter( _boxCenter );
+		colliderBox.getSize( _boxSize );
+		_halfExtents.copy( _boxSize ).multiplyScalar( 0.5 * FIRE_HITBOX_SCALE );
+		colliderBox.min.copy( _boxCenter ).sub( _halfExtents );
+		colliderBox.max.copy( _boxCenter ).add( _halfExtents );
+
+		group.add( wood );
+
+	} else {
+
+		colliderBox = new THREE.Box3(
+			new THREE.Vector3( - 0.5, 0.35, - 0.5 ),
+			new THREE.Vector3( 0.5, 2.4, 0.5 )
+		);
+
+	}
 
 	const debugCollider = new THREE.Mesh(
 		new THREE.BoxGeometry(
@@ -117,28 +131,16 @@ function createTargetVisual( woodModel, flameTexture ) {
 	const flameGroup = new THREE.Group();
 	group.add( flameGroup );
 
-	const flameCore = new THREE.Mesh(
-		new THREE.SphereGeometry( 0.34, 16, 12 ),
-		new THREE.MeshStandardMaterial( {
-			color: 0xff8a28,
-			emissive: 0xff5a10,
-			emissiveIntensity: 2.0,
-			transparent: true,
-			opacity: 0.85,
-			roughness: 0.4,
-			metalness: 0.0,
-		} )
-	);
-	flameCore.position.set( 0, colliderBox.max.y + 0.2, 0 );
-	flameCore.castShadow = false;
-	group.add( flameCore );
-
 	const flameSprites = [];
 	const flameOffsets = [
-		new THREE.Vector3( -0.2, colliderBox.max.y - 0.14, -0.08 ),
-		new THREE.Vector3( 0.17, colliderBox.max.y - 0.02, 0.1 ),
-		new THREE.Vector3( 0.02, colliderBox.max.y + 0.22, -0.03 ),
+		new THREE.Vector3( -0.28, colliderBox.max.y - 0.28, -0.12 ),
+		new THREE.Vector3( 0.24, colliderBox.max.y - 0.2, 0.1 ),
+		new THREE.Vector3( 0.0, colliderBox.max.y + 0.02, -0.02 ),
+		new THREE.Vector3( -0.14, colliderBox.max.y + 0.22, 0.08 ),
+		new THREE.Vector3( 0.16, colliderBox.max.y + 0.3, -0.06 ),
 	];
+	const flameColors = [ 0xff7a1a, 0xff8f2e, 0xfff1bf, 0xffa144, 0xffd06e ];
+	const flameScales = [ 0.95, 1.05, 0.72, 0.82, 0.68 ];
 
 	for ( let i = 0; i < flameOffsets.length; i ++ ) {
 
@@ -146,23 +148,24 @@ function createTargetVisual( woodModel, flameTexture ) {
 			map: flameTexture,
 			transparent: true,
 			depthWrite: false,
-			opacity: 0.9,
-			color: i === 2 ? 0xfff0ba : 0xff8a33,
+			opacity: 0.88,
+			color: flameColors[ i ],
 			blending: THREE.AdditiveBlending,
 		} ) );
 		sprite.position.copy( flameOffsets[ i ] );
-		sprite.scale.set( 1.4, 2.1, 1 );
+		sprite.scale.set( 1.84, 3.22, 1 );
 		flameGroup.add( sprite );
 		flameSprites.push( {
 			sprite,
 			baseOffset: flameOffsets[ i ].clone(),
 			phase: Math.random() * Math.PI * 2,
-			scale: 0.72 + i * 0.16,
+			scale: flameScales[ i ],
+			sway: 0.05 + i * 0.015,
 		} );
 
 	}
 
-	return { group, colliderBox, debugCollider, flameGroup, flameCore, flameSprites };
+	return { group, colliderBox, debugCollider, flameGroup, flameSprites };
 
 }
 
@@ -256,7 +259,7 @@ export class FireTargetSystem {
 			group,
 			colliderBox: targetVisual.colliderBox,
 			debugCollider: targetVisual.debugCollider,
-			flameCore: targetVisual.flameCore,
+			flameGroup: targetVisual.flameGroup,
 			flameSprites: targetVisual.flameSprites,
 			fireAmount: position.fireAmount ?? DEFAULT_FIRE_AMOUNT,
 			hitSmokeCooldown: 0,
@@ -284,26 +287,20 @@ export class FireTargetSystem {
 			target.hitSmokeCooldown = Math.max( 0, target.hitSmokeCooldown - dt );
 
 			const fireLevel = target.extinguished ? 0 : target.fireAmount;
-			target.flameCore.visible = fireLevel > 0;
-			if ( fireLevel > 0 ) {
-
-				const corePulse = 0.85 + fireLevel * 0.4 + Math.sin( elapsedTime * 4.5 ) * 0.06;
-				target.flameCore.scale.setScalar( corePulse );
-				target.flameCore.material.emissiveIntensity = 1.2 + fireLevel * 1.6;
-				target.flameCore.material.opacity = 0.55 + fireLevel * 0.25;
-
-			}
+			target.flameGroup.visible = fireLevel > 0;
 
 			for ( const flame of target.flameSprites ) {
 
 				flame.sprite.visible = fireLevel > 0;
 				if ( fireLevel <= 0 ) continue;
 
-				const pulse = 0.8 + fireLevel * 0.45 + Math.sin( elapsedTime * 5 + flame.phase ) * 0.08;
+				const pulse = 0.78 + fireLevel * 0.55 + Math.sin( elapsedTime * 5.2 + flame.phase ) * 0.12;
 				flame.sprite.position.copy( flame.baseOffset );
-				flame.sprite.position.y += Math.sin( elapsedTime * 3 + flame.phase ) * 0.07;
-				flame.sprite.scale.set( flame.scale * pulse, flame.scale * pulse * 1.5, 1 );
-				flame.sprite.material.opacity = 0.4 + fireLevel * 0.5;
+				flame.sprite.position.x += Math.sin( elapsedTime * 2.3 + flame.phase ) * flame.sway;
+				flame.sprite.position.z += Math.cos( elapsedTime * 2.7 + flame.phase ) * flame.sway * 0.55;
+				flame.sprite.position.y += Math.sin( elapsedTime * 3.8 + flame.phase ) * 0.14 + fireLevel * 0.08;
+				flame.sprite.scale.set( flame.scale * pulse * 1.05, flame.scale * pulse * 2.25, 1 );
+				flame.sprite.material.opacity = 0.28 + fireLevel * 0.62;
 
 			}
 
@@ -405,14 +402,16 @@ export class FireTargetSystem {
 			if ( target.extinguished || target.fireAmount <= 0 ) continue;
 
 			target.group.updateWorldMatrix( true, false );
-			target.flameCore.getWorldPosition( _tmpVec );
+			_worldAimBox.copy( target.colliderBox ).applyMatrix4( target.group.matrixWorld );
+			_tmpVec.copy( searchCenter ).clamp( _worldAimBox.min, _worldAimBox.max );
 			const distanceSq = _tmpVec.distanceToSquared( searchCenter );
 
 			if ( distanceSq > radiusSq || distanceSq >= bestDistanceSq ) continue;
 
+			target.flameGroup.getWorldPosition( _worldHit );
 			bestTarget = target;
 			bestDistanceSq = distanceSq;
-			bestPoint = _tmpVec.clone();
+			bestPoint = _worldHit.clone();
 
 		}
 

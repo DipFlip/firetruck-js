@@ -5,7 +5,7 @@ import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, e
 import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
-import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, getDecorationPlacements, getTrackPiecePlacements, CELL_RAW, GRID_SCALE } from './Track.js';
+import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, getForestTreeSpawnPlacements } from './Track.js';
 import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, createDecorationColliderSystem, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint, createVehicleWallProbe, resolveVehicleWallProbe } from './Physics.js';
 import { Effects } from './Particles.js';
 import { GameAudio } from './Audio.js';
@@ -52,14 +52,18 @@ const WATER_SPEED = 14.4;
 const WATER_GRAVITY = 18;
 const WATER_SEGMENT_DT = 0.06;
 const WATER_SEGMENT_COUNT = 20;
-const WATER_AIM_ASSIST_RADIUS = 3.0;
+const WATER_AIM_ASSIST_RADIUS = 3.45;
 const WATER_AIM_ASSIST_DISTANCE = 5.0;
+const LOOK_POINT_SPEED_SCALE = 0.8;
+const LOOK_POINT_OFFSET_SETTLE = 1.5;
+const LOOK_POINT_DAMPING_RATIO = 1.0;
+const LOOK_POINT_MAX_DISTANCE = 5.0;
 const FIRE_EXTINGUISH_SCORE = 10;
-const FIRE_START_AMOUNT = 0.5;
-const INITIAL_FIRE_COUNT = 3;
+const FIRE_START_AMOUNT = 0.25;
+const INITIAL_FIRE_COUNT = 5;
 const MAX_ACTIVE_FIRES = 10;
-const FIRE_SPAWN_INTERVAL_MIN = 3;
-const FIRE_SPAWN_INTERVAL_MAX = 10;
+const FIRE_SPAWN_INTERVAL_MIN = 1.5;
+const FIRE_SPAWN_INTERVAL_MAX = 5;
 const FIRE_SPAWN_MIN_DISTANCE = 9;
 const FIRE_SPAWN_NEAR_DISTANCE = 22;
 const FIRE_SPAWN_FALLBACK_DISTANCE = 34;
@@ -123,6 +127,18 @@ const debugAimAssistSphere = new THREE.Mesh(
 );
 debugAimAssistSphere.visible = false;
 scene.add( debugAimAssistSphere );
+const lookPoint = new THREE.Mesh(
+	new THREE.SphereGeometry( 0.3, 16, 10 ),
+	new THREE.MeshBasicMaterial( {
+		color: 0xff44aa,
+		wireframe: true,
+		transparent: true,
+		opacity: 0.9,
+		depthWrite: false,
+	} )
+);
+lookPoint.visible = false;
+scene.add( lookPoint );
 const debugProbeOffset = new THREE.Vector3();
 const debugWallGroup = new THREE.Group();
 debugWallGroup.visible = false;
@@ -162,12 +178,9 @@ scene.add( debugProbeBox );
 let playerVehicleGroup = null;
 let fireTargetSystem = null;
 const rampVisualPieces = [];
-const fireTargetCenter = new THREE.Vector2();
 const fireSpawnPoint = new THREE.Vector2();
 const fireImpactPoint = new THREE.Vector3();
 const fireImpactNormal = new THREE.Vector3( 0, 1, 0 );
-const fireTrackOffset = new THREE.Vector3();
-const fireTrackWorld = new THREE.Vector3();
 const waterArcStart = new THREE.Vector3();
 const waterArcEnd = new THREE.Vector3();
 const waterArcVelocity = new THREE.Vector3();
@@ -182,9 +195,14 @@ const waterAimAssistOffset = new THREE.Vector3();
 const waterAimAssistRelativeVelocity = new THREE.Vector3();
 const waterAimAssistLaunchVelocity = new THREE.Vector3();
 const waterAssistNormal = new THREE.Vector3();
+const lookPointOffset = new THREE.Vector3();
+const lookPointSmoothedOffset = new THREE.Vector3();
+const lookPointOffsetVelocity = new THREE.Vector3();
 const pendingWaterImpacts = [];
 const _fireSeparation = new THREE.Vector2();
 const _fireSpawnOffset = new THREE.Vector2();
+const _lookPointAccel = new THREE.Vector3();
+const _lookPointNormal = new THREE.Vector3();
 
 function shuffleInPlace( values ) {
 
@@ -205,6 +223,27 @@ function randomFireSpawnInterval() {
 
 }
 
+function settleFactor( dt, settleTime ) {
+
+	return 1 - Math.exp( - 3 * dt / settleTime );
+
+}
+
+function springOffset( current, velocity, target, dt, settleTime, dampingRatio = 1 ) {
+
+	if ( dt <= 0 ) return;
+
+	const omega = 4 / Math.max( settleTime, 1e-3 );
+	_lookPointAccel.copy( target )
+		.sub( current )
+		.multiplyScalar( omega * omega )
+		.addScaledVector( velocity, - 2 * dampingRatio * omega );
+
+	velocity.addScaledVector( _lookPointAccel, dt );
+	current.addScaledVector( velocity, dt );
+
+}
+
 function addFireSpawnCandidate( candidates, position, minDistance = 6.25 ) {
 
 	for ( const candidate of candidates ) {
@@ -218,7 +257,7 @@ function addFireSpawnCandidate( candidates, position, minDistance = 6.25 ) {
 		x: position.x,
 		y: position.y ?? 0,
 		z: position.z,
-		fireAmount: position.fireAmount ?? 1,
+		fireAmount: position.fireAmount ?? FIRE_START_AMOUNT,
 		rotationY: position.rotationY ?? 0,
 	} );
 	return true;
@@ -392,18 +431,10 @@ function solveAimAssistShot( origin, targetPoint, inheritedVelocity, launchSpeed
 
 }
 
-function buildFireSpawnPositions( customCells, bounds, spawn ) {
+function buildFireSpawnPositions( models, customCells, bounds, spawn ) {
 
-	const placements = getDecorationPlacements( customCells )
-		.filter( ( placement ) => placement.key !== 'decoration-forest' )
-		.map( ( placement ) => ( {
-			x: placement.x * GRID_SCALE,
-			y: 0,
-			z: placement.z * GRID_SCALE,
-			key: placement.key,
-		} ) );
-
-	fireTargetCenter.set( bounds.centerX, bounds.centerZ );
+	const treePlacements = getForestTreeSpawnPlacements( models, customCells );
+	if ( treePlacements.length === 0 ) return [];
 
 	if ( spawn ) {
 
@@ -415,106 +446,50 @@ function buildFireSpawnPositions( customCells, bounds, spawn ) {
 
 	}
 
-	const quadrants = [
-		[ - 1, - 1 ],
-		[ 1, - 1 ],
-		[ - 1, 1 ],
-		[ 1, 1 ],
-	];
 	const candidates = [];
-	const rampPlacement = getTrackPiecePlacements( customCells ).find( ( placement ) => placement.key === 'ramp' );
+	const nearbyTrees = [];
+	const remainingTrees = [];
 
-	if ( rampPlacement ) {
+	for ( const treePlacement of treePlacements ) {
 
-		fireTrackOffset.set( - CELL_RAW * 0.48, 0, - CELL_RAW * 0.2 );
-		fireTrackOffset.applyAxisAngle( new THREE.Vector3( 0, 1, 0 ), rampPlacement.rotationY );
-		fireTrackWorld.set(
-			rampPlacement.x * GRID_SCALE,
-			rampPlacement.y * GRID_SCALE - 0.5,
-			rampPlacement.z * GRID_SCALE
-		).addScaledVector( fireTrackOffset, GRID_SCALE );
+		const distSpawn = Math.hypot( treePlacement.x - fireSpawnPoint.x, treePlacement.z - fireSpawnPoint.y );
+		if ( distSpawn < 7 ) continue;
 
-		addFireSpawnCandidate( candidates, {
-			x: fireTrackWorld.x,
-			y: fireTrackWorld.y,
-			z: fireTrackWorld.z,
-			fireAmount: FIRE_START_AMOUNT,
-		}, 0 );
+		if ( distSpawn <= 18 ) {
 
-	} else if ( spawn ) {
+			nearbyTrees.push( { treePlacement, distSpawn } );
 
-		addFireSpawnCandidate( candidates, {
-			x: spawn.position[ 0 ] - 4.5,
-			y: 0,
-			z: spawn.position[ 2 ] + 4.5,
-			fireAmount: FIRE_START_AMOUNT,
-		}, 0 );
+		} else {
 
-	}
-
-	for ( const [ signX, signZ ] of quadrants ) {
-
-		let best = null;
-		let bestScore = - Infinity;
-
-		for ( const placement of placements ) {
-
-			const dx = placement.x - fireTargetCenter.x;
-			const dz = placement.z - fireTargetCenter.y;
-			if ( Math.sign( dx || signX ) !== signX ) continue;
-			if ( Math.sign( dz || signZ ) !== signZ ) continue;
-
-			const distCenter = Math.hypot( dx, dz );
-			const distSpawn = Math.hypot( placement.x - fireSpawnPoint.x, placement.z - fireSpawnPoint.y );
-			if ( distCenter < 10 || distSpawn < 12 ) continue;
-			if ( candidates.some( ( target ) => Math.hypot( placement.x - target.x, placement.z - target.z ) < 7 ) ) continue;
-
-			const score = distCenter + ( placement.key === 'decoration-tents' ? 2.5 : 0 );
-			if ( score <= bestScore ) continue;
-
-			best = placement;
-			bestScore = score;
+			remainingTrees.push( treePlacement );
 
 		}
 
-		if ( best ) addFireSpawnCandidate( candidates, best, 7 );
+	}
+
+	nearbyTrees.sort( ( a, b ) => a.distSpawn - b.distSpawn );
+	shuffleInPlace( remainingTrees );
+
+	for ( const { treePlacement } of nearbyTrees ) {
+		addFireSpawnCandidate( candidates, {
+			x: treePlacement.x,
+			y: treePlacement.y,
+			z: treePlacement.z,
+			fireAmount: FIRE_START_AMOUNT,
+			rotationY: treePlacement.rotationY,
+		}, 4.25 );
 
 	}
 
-	const fallbackOffsets = [
-		[ - 0.55, - 0.28 ],
-		[ 0.48, - 0.46 ],
-		[ - 0.22, 0.5 ],
-		[ 0.52, 0.22 ],
-	];
-	const fallbackTargets = fallbackOffsets.map( ( [ ox, oz ] ) => ( {
-		x: bounds.centerX + bounds.halfWidth * ox,
-		y: 0,
-		z: bounds.centerZ + bounds.halfDepth * oz,
-	} ) );
+	for ( const treePlacement of remainingTrees ) {
 
-	for ( const fallbackTarget of fallbackTargets ) {
-
-		addFireSpawnCandidate( candidates, fallbackTarget, 7 );
-
-	}
-
-	const extraCandidates = placements.filter( ( placement ) => {
-
-		const distCenter = Math.hypot( placement.x - fireTargetCenter.x, placement.z - fireTargetCenter.y );
-		const distSpawn = Math.hypot( placement.x - fireSpawnPoint.x, placement.z - fireSpawnPoint.y );
-		if ( distSpawn < 11 ) return false;
-		if ( distCenter < 8 ) return false;
-		if ( candidates.some( ( candidate ) => Math.hypot( placement.x - candidate.x, placement.z - candidate.z ) < 6.5 ) ) return false;
-		return true;
-
-	} );
-
-	shuffleInPlace( extraCandidates );
-
-	for ( const extraCandidate of extraCandidates ) {
-
-		addFireSpawnCandidate( candidates, extraCandidate, 6.5 );
+		addFireSpawnCandidate( candidates, {
+			x: treePlacement.x,
+			y: treePlacement.y,
+			z: treePlacement.z,
+			fireAmount: FIRE_START_AMOUNT,
+			rotationY: treePlacement.rotationY,
+		}, 4.25 );
 
 	}
 
@@ -526,6 +501,7 @@ debugSphereToggle.addEventListener( 'change', () => {
 
 	debugSphere.visible = debugSphereToggle.checked;
 	debugAimAssistSphere.visible = debugSphereToggle.checked;
+	lookPoint.visible = debugSphereToggle.checked;
 	debugProbeBox.visible = debugSphereToggle.checked;
 	debugWallGroup.visible = debugSphereToggle.checked;
 	if ( playerVehicleGroup ) playerVehicleGroup.visible = ! debugSphereToggle.checked;
@@ -778,14 +754,17 @@ async function init() {
 	dirLight.target = playerVehicleGroup;
 
 	const cam = new Camera( renderer );
-	cam.targetPosition.copy( vehicle.spherePos );
+	lookPoint.position.copy( vehicle.spherePos );
+	lookPointSmoothedOffset.set( 0, 0, 0 );
+	lookPointOffsetVelocity.set( 0, 0, 0 );
+	cam.targetPosition.copy( lookPoint.position );
 
 	const controls = new Controls();
 
 	const effects = new Effects( scene );
-	const fireSpawnPositions = buildFireSpawnPositions( customCells, bounds, spawn );
+	const fireSpawnPositions = buildFireSpawnPositions( models, customCells, bounds, spawn );
 	const initialFireTargets = fireSpawnPositions.splice( 0, Math.min( INITIAL_FIRE_COUNT, fireSpawnPositions.length ) );
-	const fireTargets = new FireTargetSystem( scene, effects, models.wood, initialFireTargets );
+	const fireTargets = new FireTargetSystem( scene, effects, null, initialFireTargets );
 	fireTargets.setDebugVisible( debugSphereToggle.checked );
 	fireTargetSystem = fireTargets;
 	const scorePopups = new ScorePopupSystem( scene );
@@ -1077,6 +1056,8 @@ async function init() {
 		if ( vehicle.justReset ) {
 
 			syncCollisionPosition( true );
+			lookPointSmoothedOffset.set( 0, 0, 0 );
+			lookPointOffsetVelocity.set( 0, 0, 0 );
 
 		}
 		debugSphere.position.copy( vehicle.spherePos );
@@ -1104,7 +1085,32 @@ async function init() {
 			vehicle.spherePos.z - 5.3
 		);
 
-		cam.update( dt, vehicle.spherePos );
+		lookPointOffset.copy( vehicle.modelVelocity ).setY( 0 ).multiplyScalar( LOOK_POINT_SPEED_SCALE );
+		springOffset(
+			lookPointSmoothedOffset,
+			lookPointOffsetVelocity,
+			lookPointOffset,
+			dt,
+			LOOK_POINT_OFFSET_SETTLE,
+			LOOK_POINT_DAMPING_RATIO
+		);
+		if ( lookPointSmoothedOffset.lengthSq() > LOOK_POINT_MAX_DISTANCE * LOOK_POINT_MAX_DISTANCE ) {
+
+			lookPointSmoothedOffset.setLength( LOOK_POINT_MAX_DISTANCE );
+			const outwardSpeed = lookPointOffsetVelocity.dot( lookPointSmoothedOffset ) / Math.max( lookPointSmoothedOffset.length(), 1e-5 );
+			if ( outwardSpeed > 0 ) {
+
+				lookPointOffsetVelocity.addScaledVector(
+					_lookPointNormal.copy( lookPointSmoothedOffset ).normalize(),
+					- outwardSpeed
+				);
+
+			}
+
+		}
+		lookPoint.position.copy( vehicle.spherePos ).add( lookPointSmoothedOffset );
+
+		cam.update( dt, lookPoint.position );
 		cam.camera.getWorldDirection( waterViewForward );
 		waterViewForward.projectOnPlane( waterWorldUp ).normalize();
 		waterViewRight.set( 1, 0, 0 ).applyQuaternion( cam.camera.quaternion ).projectOnPlane( waterWorldUp ).normalize();
