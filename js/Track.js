@@ -202,6 +202,12 @@ function collectTaggedRoots( root, prefix ) {
 
 }
 
+function makeTreePlacementId( placement, treeName ) {
+
+	return `${ placement.key }:${ placement.gx }:${ placement.gz }:${ treeName.toLowerCase() }`;
+
+}
+
 export function getForestTreeSpawnPlacements( models, customCells ) {
 
 	const src = models?.[ 'decoration-forest' ];
@@ -243,6 +249,7 @@ export function getForestTreeSpawnPlacements( models, customCells ) {
 
 			worldTreeAnchor.copy( tree.anchor ).applyMatrix4( placementTransform.matrixWorld );
 			result.push( {
+				treeId: makeTreePlacementId( placement, tree.name ),
 				gx: placement.gx,
 				gz: placement.gz,
 				x: worldTreeAnchor.x * GRID_SCALE,
@@ -430,6 +437,10 @@ export function buildTrack( scene, models, customCells ) {
 
 	const trackPieceGroup = new THREE.Group();
 	const decoGroup = new THREE.Group();
+	const treeInstances = new Map();
+	const _instanceDummy = new THREE.Object3D();
+	const _treeAnchorBounds = new THREE.Box3();
+	const _treeAnchorWorld = new THREE.Vector3();
 
 	for ( const placement of getTrackPiecePlacements( customCells ) ) {
 
@@ -476,7 +487,7 @@ export function buildTrack( scene, models, customCells ) {
 
 		const _dummy = new THREE.Object3D();
 
-		function addInstancedMeshesFromSource( src, placements ) {
+		function addInstancedMeshesFromSource( src, placements, treeRootName = null, treeAnchor = null ) {
 
 			if ( placements.length === 0 || ! src ) return;
 
@@ -496,6 +507,36 @@ export function buildTrack( scene, models, customCells ) {
 					_dummy.rotation.set( 0, placement.rotationY, 0 );
 					_dummy.updateMatrix();
 					inst.setMatrixAt( i, _dummy.matrix );
+
+						if ( treeRootName ) {
+
+							const treeId = makeTreePlacementId( placement, treeRootName );
+							let entry = treeInstances.get( treeId );
+							if ( ! entry ) {
+
+								_treeAnchorWorld.copy( treeAnchor ?? new THREE.Vector3() ).applyMatrix4( _dummy.matrix );
+								_treeAnchorWorld.x *= GRID_SCALE;
+								_treeAnchorWorld.y = _treeAnchorWorld.y * GRID_SCALE - 0.5;
+								_treeAnchorWorld.z *= GRID_SCALE;
+
+								entry = {
+									parts: [],
+									x: placement.x,
+									y: placement.y,
+									z: placement.z,
+									rotationY: placement.rotationY,
+									worldX: _treeAnchorWorld.x,
+									worldY: _treeAnchorWorld.y,
+									worldZ: _treeAnchorWorld.z,
+									hidden: false,
+								};
+								treeInstances.set( treeId, entry );
+
+						}
+
+						entry.parts.push( { mesh: inst, index: i } );
+
+					}
 
 				}
 
@@ -521,7 +562,10 @@ export function buildTrack( scene, models, customCells ) {
 					continue;
 
 				}
-				addInstancedMeshesFromSource( treeRoot, filteredPlacements );
+				_treeAnchorBounds.setFromObject( treeRoot );
+				const treeAnchor = _treeAnchorBounds.getCenter( new THREE.Vector3() );
+				treeAnchor.y = _treeAnchorBounds.min.y;
+				addInstancedMeshesFromSource( treeRoot, filteredPlacements, treeRoot.name, treeAnchor );
 				treeRoot.removeFromParent();
 
 			}
@@ -541,6 +585,50 @@ export function buildTrack( scene, models, customCells ) {
 
 	trackGroup.scale.setScalar( 0.75 );
 	scene.add( trackGroup );
+
+	trackGroup.userData.treeBurnController = {
+		hideTree( treeId, worldPosition = null ) {
+
+			let entry = treeId ? treeInstances.get( treeId ) : null;
+
+			if ( ( ! entry || entry.hidden ) && worldPosition ) {
+
+				let bestDistanceSq = Infinity;
+
+				for ( const candidate of treeInstances.values() ) {
+
+					if ( candidate.hidden ) continue;
+					const dx = candidate.worldX - worldPosition.x;
+					const dy = candidate.worldY - worldPosition.y;
+					const dz = candidate.worldZ - worldPosition.z;
+					const distanceSq = dx * dx + dy * dy + dz * dz;
+					if ( distanceSq >= bestDistanceSq ) continue;
+					bestDistanceSq = distanceSq;
+					entry = candidate;
+
+				}
+
+			}
+
+			if ( ! entry || entry.hidden ) return false;
+
+			_instanceDummy.position.set( entry.x, entry.y, entry.z );
+			_instanceDummy.rotation.set( 0, entry.rotationY, 0 );
+			_instanceDummy.scale.setScalar( 1e-4 );
+			_instanceDummy.updateMatrix();
+
+			for ( const part of entry.parts ) {
+
+				part.mesh.setMatrixAt( part.index, _instanceDummy.matrix );
+				part.mesh.instanceMatrix.needsUpdate = true;
+
+			}
+
+			entry.hidden = true;
+			return true;
+
+		},
+	};
 
 	trackGroup.updateMatrixWorld( true );
 

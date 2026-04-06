@@ -5,7 +5,7 @@ import { createWorldSettings, createWorld, addBroadphaseLayer, addObjectLayer, e
 import { Vehicle } from './Vehicle.js';
 import { Camera } from './Camera.js';
 import { Controls } from './Controls.js';
-import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, getForestTreeSpawnPlacements } from './Track.js';
+import { buildTrack, decodeCells, computeSpawnPosition, computeTrackBounds, getDecorationPlacements, getForestTreeSpawnPlacements, CELL_RAW, GRID_SCALE } from './Track.js';
 import { buildWallColliders, buildRampColliders, buildTrackObstacleColliders, createDecorationColliderSystem, createSphereBody, createVehicleCollisionProfile, createVehicleCollisionBody, createVehicleCollisionConstraint, createVehicleWallProbe, resolveVehicleWallProbe } from './Physics.js';
 import { Effects } from './Particles.js';
 import { GameAudio } from './Audio.js';
@@ -318,6 +318,7 @@ function addFireSpawnCandidate( candidates, position, minDistance = 6.25 ) {
 		x: position.x,
 		y: position.y ?? 0,
 		z: position.z,
+		treeId: position.treeId ?? null,
 		fireAmount: position.fireAmount ?? FIRE_START_AMOUNT,
 		rotationY: position.rotationY ?? 0,
 	} );
@@ -362,7 +363,7 @@ function takeNearbyFireSpawn( candidates, playerPosition ) {
 
 }
 
-function buildWaterPickupPositions( bounds, spawn ) {
+function buildWaterPickupPositions( bounds, customCells, spawn ) {
 
 	if ( spawn ) {
 
@@ -375,10 +376,33 @@ function buildWaterPickupPositions( bounds, spawn ) {
 	}
 
 	const pickups = [];
-	const minX = bounds.centerX - bounds.halfWidth - 3;
-	const maxX = bounds.centerX + bounds.halfWidth + 3;
-	const minZ = bounds.centerZ - bounds.halfDepth - 3;
-	const maxZ = bounds.centerZ + bounds.halfDepth + 3;
+	const decorationPlacements = getDecorationPlacements( customCells );
+	const halfCell = CELL_RAW * GRID_SCALE * 0.5;
+	let minX = bounds.centerX - bounds.halfWidth - 3;
+	let maxX = bounds.centerX + bounds.halfWidth + 3;
+	let minZ = bounds.centerZ - bounds.halfDepth - 3;
+	let maxZ = bounds.centerZ + bounds.halfDepth + 3;
+
+	if ( decorationPlacements.length > 0 ) {
+
+		minX = Infinity;
+		maxX = - Infinity;
+		minZ = Infinity;
+		maxZ = - Infinity;
+
+		for ( const placement of decorationPlacements ) {
+
+			const worldX = placement.x * GRID_SCALE;
+			const worldZ = placement.z * GRID_SCALE;
+			minX = Math.min( minX, worldX - halfCell );
+			maxX = Math.max( maxX, worldX + halfCell );
+			minZ = Math.min( minZ, worldZ - halfCell );
+			maxZ = Math.max( maxZ, worldZ + halfCell );
+
+		}
+
+	}
+
 	const maxAttempts = WATER_PICKUP_COUNT * 18;
 
 	for ( let attempt = 0; attempt < maxAttempts && pickups.length < WATER_PICKUP_COUNT; attempt ++ ) {
@@ -745,6 +769,7 @@ async function init() {
 	scene.fog.far = groundSize * 0.8;
 
 	const driveSurfaceRoot = buildTrack( scene, models, customCells );
+	const treeBurnController = driveSurfaceRoot.userData.treeBurnController ?? null;
 	rampVisualPieces.length = 0;
 
 	for ( const piece of driveSurfaceRoot.children ) {
@@ -883,7 +908,8 @@ async function init() {
 	fireTargets.setDebugVisible( debugSphereToggle.checked );
 	fireTargetSystem = fireTargets;
 	const scorePopups = new ScorePopupSystem( scene );
-	const waterPickupPositions = buildWaterPickupPositions( bounds, spawn );
+	const burnedTreeStumps = [];
+	const waterPickupPositions = buildWaterPickupPositions( bounds, customCells, spawn );
 	const waterPickupMaterial = new THREE.MeshStandardMaterial( {
 		color: 0x54b8ff,
 		emissive: 0x1f7bff,
@@ -995,6 +1021,41 @@ async function init() {
 	let emptyWaterCooldown = 0;
 	let fireSpawnTimer = 0;
 	let nextFireSpawnInterval = randomFireSpawnInterval();
+	let previousVehicleGrounded = true;
+
+	function spawnBurnedTreeStump( position, rotationY = 0 ) {
+
+		const src = models.wood;
+		if ( ! src ) return;
+
+		const stump = src.clone();
+		stump.traverse( ( child ) => {
+
+			if ( ! child.isMesh ) return;
+			child.castShadow = true;
+			child.receiveShadow = true;
+
+		} );
+
+		stump.updateMatrixWorld( true );
+		const rawBounds = new THREE.Box3().setFromObject( stump );
+		const rawSize = rawBounds.getSize( new THREE.Vector3() );
+		const targetWidth = 1.15;
+		const scale = targetWidth / Math.max( rawSize.x, rawSize.z, 1e-4 );
+		stump.scale.setScalar( scale );
+		stump.updateMatrixWorld( true );
+
+		const scaledBounds = new THREE.Box3().setFromObject( stump );
+		const scaledCenter = scaledBounds.getCenter( new THREE.Vector3() );
+		stump.position.sub( scaledCenter );
+		stump.position.y -= scaledBounds.min.y;
+		stump.position.y -= 0.02;
+		stump.rotation.y = rotationY;
+		stump.position.add( position );
+		scene.add( stump );
+		burnedTreeStumps.push( stump );
+
+	}
 
 	function getCapsuleTiltNormal() {
 
@@ -1262,7 +1323,19 @@ async function init() {
 		updateWorld( world, contactListener, dt );
 
 		const groundState = sampleGroundState();
+		const wasGrounded = previousVehicleGrounded;
 		vehicle.update( dt, input, groundState, driveViewForward, driveViewRight );
+		const isGroundedNow = vehicle.isGrounded;
+		if ( wasGrounded && ! isGroundedNow && vehicle.sphereVel.y > 0.9 ) {
+
+			audio.playCarJump();
+
+		} else if ( ! wasGrounded && isGroundedNow && Math.abs( vehicle.sphereVel.y ) > 0.6 ) {
+
+			audio.playCarLand();
+
+		}
+		previousVehicleGrounded = isGroundedNow;
 		syncCollisionOrientation();
 		const wallProbeImpactVelocity = resolveVehicleWallProbe( world, vehicle, wallProbeBoxes, vehicleWallProbe );
 		if ( wallProbeImpactVelocity > 0 ) {
@@ -1322,6 +1395,7 @@ async function init() {
 					waterAmount = WATER_TANK_CAPACITY;
 					waterMeterRefillFlash = 1.2;
 					spawnRefillWisps( pickup.group.position );
+					audio.playWaterRefill();
 
 				}
 
@@ -1478,6 +1552,7 @@ async function init() {
 
 					score += FIRE_EXTINGUISH_SCORE;
 					scorePopups.spawn( result.position, `+${ FIRE_EXTINGUISH_SCORE }` );
+					audio.playFireExtinguished();
 
 				}
 
@@ -1508,10 +1583,17 @@ async function init() {
 
 		}
 
-		fireTargets.update( dt, elapsedTime );
+		const burnedOutTrees = fireTargets.update( dt, elapsedTime );
+		for ( const burnedTree of burnedOutTrees ) {
+
+			const treeRemoved = treeBurnController?.hideTree( burnedTree.treeId, burnedTree.position ) ?? false;
+			if ( treeRemoved ) spawnBurnedTreeStump( burnedTree.position, burnedTree.rotationY );
+			audio.playBurnedUp();
+
+		}
 		effects.update( dt, vehicle, waterState );
 		scorePopups.update( dt );
-		audio.update( dt, vehicle.linearSpeed, input.z, vehicle.driftIntensity );
+		audio.update( dt, vehicle.linearSpeed, input.z, vehicle.driftIntensity, sprayDt > 0 );
 		waterMeterPulse = Math.max( 0, waterMeterPulse - dt * 3.2 );
 		waterMeterEmptyKick = Math.max( 0, waterMeterEmptyKick - dt * 4.4 );
 		waterMeterRefillFlash = Math.max( 0, waterMeterRefillFlash - dt * 2.6 );

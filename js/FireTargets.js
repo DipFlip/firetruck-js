@@ -8,6 +8,10 @@ const FLAME_HORIZONTAL_SPREAD = 1.15;
 const DEFAULT_FIRE_AMOUNT = 0.25;
 const FIRE_HITBOX_SCALE = 2.4;
 const FIRE_HIT_SMOKE_COOLDOWN = 0.18;
+const TREE_START_HP = 18;
+const TREE_BURN_DAMAGE_PER_SECOND = 1;
+const TREE_HP_BAR_WIDTH = 1.55;
+const TREE_HP_BAR_HEIGHT = 0.16;
 
 const _boxSize = new THREE.Vector3();
 const _boxCenter = new THREE.Vector3();
@@ -54,6 +58,87 @@ function createFlameTexture() {
 	const texture = new THREE.CanvasTexture( canvas );
 	texture.needsUpdate = true;
 	return texture;
+
+}
+
+function drawRoundedRect( ctx, x, y, width, height, radius ) {
+
+	const clampedRadius = Math.min( radius, width * 0.5, height * 0.5 );
+	ctx.beginPath();
+	ctx.moveTo( x + clampedRadius, y );
+	ctx.lineTo( x + width - clampedRadius, y );
+	ctx.quadraticCurveTo( x + width, y, x + width, y + clampedRadius );
+	ctx.lineTo( x + width, y + height - clampedRadius );
+	ctx.quadraticCurveTo( x + width, y + height, x + width - clampedRadius, y + height );
+	ctx.lineTo( x + clampedRadius, y + height );
+	ctx.quadraticCurveTo( x, y + height, x, y + height - clampedRadius );
+	ctx.lineTo( x, y + clampedRadius );
+	ctx.quadraticCurveTo( x, y, x + clampedRadius, y );
+	ctx.closePath();
+
+}
+
+function createHealthBarSprite() {
+
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = 128;
+	canvas.height = 24;
+
+	const ctx = canvas.getContext( '2d' );
+	const texture = new THREE.CanvasTexture( canvas );
+	texture.colorSpace = THREE.SRGBColorSpace;
+	texture.needsUpdate = true;
+
+	const sprite = new THREE.Sprite( new THREE.SpriteMaterial( {
+		map: texture,
+		transparent: true,
+		opacity: 1,
+		alphaTest: 0.1,
+		depthWrite: false,
+		depthTest: false,
+		toneMapped: false,
+	} ) );
+	sprite.scale.set( TREE_HP_BAR_WIDTH, TREE_HP_BAR_HEIGHT, 1 );
+
+	return { sprite, canvas, ctx, texture };
+
+}
+
+function redrawHealthBar( healthBar, ratio ) {
+
+	const { canvas, ctx, texture } = healthBar;
+	const width = canvas.width;
+	const height = canvas.height;
+	const padding = 1;
+	const innerX = padding;
+	const innerY = padding;
+	const innerWidth = width - padding * 2;
+	const innerHeight = height - padding * 2;
+	const fillWidth = Math.round( innerWidth * THREE.MathUtils.clamp( ratio, 0, 1 ) );
+	const radius = innerHeight * 0.5;
+
+	ctx.clearRect( 0, 0, width, height );
+
+	ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+	drawRoundedRect( ctx, 0, 0, width, height, height * 0.5 );
+	ctx.fill();
+
+	ctx.fillStyle = '#ef4a36';
+	drawRoundedRect( ctx, innerX, innerY, innerWidth, innerHeight, radius );
+	ctx.fill();
+
+	if ( fillWidth > 0 ) {
+
+		ctx.save();
+		drawRoundedRect( ctx, innerX, innerY, innerWidth, innerHeight, radius );
+		ctx.clip();
+		ctx.fillStyle = '#00d846';
+		ctx.fillRect( innerX, innerY, fillWidth, innerHeight );
+		ctx.restore();
+
+	}
+
+	texture.needsUpdate = true;
 
 }
 
@@ -132,6 +217,13 @@ function createTargetVisual( woodModel, flameTexture ) {
 	const flameGroup = new THREE.Group();
 	group.add( flameGroup );
 
+	const healthBarGroup = new THREE.Group();
+	healthBarGroup.position.set( 0, colliderBox.max.y + 1.05, 0 );
+	group.add( healthBarGroup );
+	const healthBar = createHealthBarSprite();
+	redrawHealthBar( healthBar, 1 );
+	healthBarGroup.add( healthBar.sprite );
+
 	const flameSprites = [];
 	const flameOffsets = [
 		new THREE.Vector3( -0.28, colliderBox.max.y - 0.28, -0.12 ),
@@ -170,7 +262,7 @@ function createTargetVisual( woodModel, flameTexture ) {
 
 	}
 
-	return { group, colliderBox, debugCollider, flameGroup, flameSprites };
+	return { group, colliderBox, debugCollider, flameGroup, flameSprites, healthBarGroup, healthBar };
 
 }
 
@@ -266,6 +358,10 @@ export class FireTargetSystem {
 			debugCollider: targetVisual.debugCollider,
 			flameGroup: targetVisual.flameGroup,
 			flameSprites: targetVisual.flameSprites,
+			healthBarGroup: targetVisual.healthBarGroup,
+			healthBar: targetVisual.healthBar,
+			treeId: position.treeId ?? null,
+			treeHp: position.treeHp ?? TREE_START_HP,
 			fireAmount: position.fireAmount ?? DEFAULT_FIRE_AMOUNT,
 			hitSmokeCooldown: 0,
 			extinguished: false,
@@ -287,12 +383,38 @@ export class FireTargetSystem {
 
 	update( dt, elapsedTime ) {
 
+		const burnedOut = [];
+
 		for ( const target of this.targets ) {
 
 			target.hitSmokeCooldown = Math.max( 0, target.hitSmokeCooldown - dt );
 
+			if ( ! target.extinguished && target.fireAmount > 0 ) {
+
+				target.treeHp = Math.max( 0, target.treeHp - dt * TREE_BURN_DAMAGE_PER_SECOND );
+
+				if ( target.treeHp <= 0 ) {
+
+					target.extinguished = true;
+					target.fireAmount = 0;
+					_tmpVec.copy( target.group.position );
+					_tmpVec.y += target.colliderBox.max.y * 0.35;
+					this.effects.emitExtinguishSmoke( _tmpVec, 22 );
+					burnedOut.push( {
+						treeId: target.treeId,
+						position: target.group.position.clone(),
+						rotationY: target.group.rotation.y,
+					} );
+
+				}
+
+			}
+
 			const fireLevel = target.extinguished ? 0 : target.fireAmount;
+			const hpRatio = THREE.MathUtils.clamp( target.treeHp / TREE_START_HP, 0, 1 );
 			target.flameGroup.visible = fireLevel > 0;
+			target.healthBarGroup.visible = fireLevel > 0 && hpRatio > 0;
+			redrawHealthBar( target.healthBar, hpRatio );
 
 			for ( const flame of target.flameSprites ) {
 
@@ -314,6 +436,8 @@ export class FireTargetSystem {
 			}
 
 		}
+
+		return burnedOut;
 
 	}
 
