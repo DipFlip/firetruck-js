@@ -586,7 +586,7 @@ export function buildTrack( scene, models, customCells ) {
 	trackGroup.scale.setScalar( 0.75 );
 	scene.add( trackGroup );
 
-	trackGroup.userData.treeBurnController = {
+	const treeBurnController = {
 		hideTree( treeId, worldPosition = null ) {
 
 			let entry = treeId ? treeInstances.get( treeId ) : null;
@@ -629,6 +629,8 @@ export function buildTrack( scene, models, customCells ) {
 
 		},
 	};
+	trackGroup.userData.treeBurnController = treeBurnController;
+	trackPieceGroup.userData.treeBurnController = treeBurnController;
 
 	trackGroup.updateMatrixWorld( true );
 
