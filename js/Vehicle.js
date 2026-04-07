@@ -22,8 +22,8 @@ const LINEAR_DAMP = 0.1;
 const MIN_JUMP_SPEED = 2.7;
 const MAX_JUMP_SPEED = 8.25;
 const JUMP_CHARGE_DURATION = 0.75;
-const JUMP_BODY_SQUAT = 0.09;
-const JUMP_WHEEL_COMPRESSION = 0.78;
+const JUMP_BODY_SQUAT = 0.15;
+const JUMP_WHEEL_COMPRESSION = 0.18;
 const VEHICLE_SPHERE_RADIUS = 0.5;
 const GROUNDED_VERTICAL_SPEED = 2.75;
 const AIR_CONTROL_FACTOR = 0.35;
@@ -31,6 +31,7 @@ const CANNON_ELEVATION = 0.08;
 const WATER_RECOIL_ACCEL = 8.5;
 const JUMP_PITCH_KICK = 0.24;
 const SCREEN_DRIVE_STEER_GAIN = 2.2;
+const BODY_VISUAL_RIDE_BIAS = 0.05;
 
 function lerpAngle( a, b, t ) {
 
@@ -73,8 +74,8 @@ export class Vehicle {
 		this.wheelMR = null;
 		this.wheelBL = null;
 		this.wheelBR = null;
-		this.bodyRideHeightGrounded = 0.2;
-		this.bodyRideHeightAirborne = 0.3;
+		this.bodyRideHeightGrounded = 0.2 + BODY_VISUAL_RIDE_BIAS;
+		this.bodyRideHeightAirborne = 0.3 + BODY_VISUAL_RIDE_BIAS;
 		this.bodyLongitudinalOffset = 0;
 
 		this.inputX = 0;
@@ -152,8 +153,8 @@ export class Vehicle {
 
 		if ( this.wheelML || this.wheelMR ) {
 
-			this.bodyRideHeightGrounded = 0.12;
-			this.bodyRideHeightAirborne = 0.22;
+			this.bodyRideHeightGrounded = 0.12 + BODY_VISUAL_RIDE_BIAS;
+			this.bodyRideHeightAirborne = 0.22 + BODY_VISUAL_RIDE_BIAS;
 			this.bodyLongitudinalOffset = 0.2;
 
 		}
@@ -441,7 +442,7 @@ export class Vehicle {
 			restLocalPosition: localCenter.clone(),
 			restLocalY: wheel.position.y,
 			restRotationY: wheel.rotation.y,
-			maxCompression: Math.max( radius * 0.6, 0.12 ),
+			maxCompression: Math.max( radius * 1.1, 0.2 ),
 			maxDroop: Math.max( radius * 0.9, 0.2 ),
 		} );
 
@@ -565,7 +566,9 @@ export class Vehicle {
 			radius: state.radius,
 			maxCompression: state.maxCompression,
 			maxDroop: state.maxDroop,
-			worldCenter: state.restLocalPosition.clone().applyMatrix4( this.container.matrixWorld ),
+			worldCenter: state.restLocalPosition.clone()
+				.add( _tmpVecC.set( 0, state.node.position.y - state.restLocalY, 0 ) )
+				.applyMatrix4( this.container.matrixWorld ),
 		} ) );
 
 	}
@@ -619,7 +622,7 @@ export class Vehicle {
 			if ( support?.isSupported ) {
 
 				const supportUpDot = Math.max( support.normal?.dot( visualUp ) ?? 1, 0.55 );
-				const supportLift = state.radius / supportUpDot;
+				const supportLift = ( state.radius + ( support.liftBias ?? 0 ) ) / supportUpDot;
 				_tmpVecC.copy( support.contactPoint ).addScaledVector( visualUp, supportLift );
 				this.container.worldToLocal( _tmpVecC );
 				targetY = THREE.MathUtils.clamp(

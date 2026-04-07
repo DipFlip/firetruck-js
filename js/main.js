@@ -1104,7 +1104,7 @@ async function init() {
 
 	}
 
-	function castGroundProbeAt( worldPoint ) {
+	function castGroundProbeAt( worldPoint, allowSurfaceOverlap = false ) {
 
 		groundProbeOrigin.copy( worldPoint );
 		groundProbeOrigin.y += GROUND_PROBE_START_HEIGHT;
@@ -1130,7 +1130,7 @@ async function init() {
 
 		const supportY = hit.pointB[ 1 ];
 		const distanceToSurface = worldPoint.y - supportY;
-		if ( distanceToSurface < - GROUND_SURFACE_OVERLAP_TOLERANCE ) return null;
+		if ( ! allowSurfaceOverlap && distanceToSurface < - GROUND_SURFACE_OVERLAP_TOLERANCE ) return null;
 
 		return {
 			point: new THREE.Vector3( hit.pointB[ 0 ], hit.pointB[ 1 ], hit.pointB[ 2 ] ),
@@ -1243,7 +1243,7 @@ async function init() {
 		const wheelSupports = [];
 		for ( const wheelProbe of vehicle.getWheelProbePoints() ) {
 
-			const hit = castGroundProbeAt( wheelProbe.worldCenter );
+			const hit = castGroundProbeAt( wheelProbe.worldCenter, true );
 			if ( ! hit ) {
 
 				wheelSupports.push( {
@@ -1261,15 +1261,16 @@ async function init() {
 
 			const wheelToGround = wheelProbe.worldCenter.y - hit.point.y - wheelProbe.radius;
 			const isSupported = wheelToGround <= wheelProbe.maxDroop;
-			wheelSupports.push( {
-				key: wheelProbe.key,
-				axle: wheelProbe.axle,
-				isFront: wheelProbe.isFront,
-				isLeft: wheelProbe.isLeft,
-				isSupported,
-				contactPoint: isSupported ? hit.point.clone() : null,
-				normal: isSupported ? hit.normal.clone() : null,
-			} );
+				wheelSupports.push( {
+					key: wheelProbe.key,
+					axle: wheelProbe.axle,
+					isFront: wheelProbe.isFront,
+					isLeft: wheelProbe.isLeft,
+					isSupported,
+					contactPoint: isSupported ? hit.point.clone() : null,
+					liftBias: isSupported ? GROUND_PROBE_RADIUS : 0,
+					normal: isSupported ? hit.normal.clone() : null,
+				} );
 
 		}
 
