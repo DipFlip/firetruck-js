@@ -22,7 +22,9 @@ const MIN_BUMPER_BOTTOM = VEHICLE_SPHERE_RADIUS * 0.9;
 const CAPSULE_SAMPLE_OFFSETS = [ - 1, - 0.5, 0, 0.5, 1 ];
 const SPHERE_SAMPLE_OFFSETS = [ 0 ];
 const DECORATION_COLLIDER_RADIUS_CELLS = 2;
+const BURNED_TREE_TARGET_WIDTH = 1.15;
 let _rampShape = null;
+let _burnedTreeColliderShape = null;
 const _convexHullDebugGeometries = new WeakMap();
 
 function addDebugBox( group, halfExtents, position, quaternion ) {
@@ -402,6 +404,41 @@ function getNamedObstacleColliderProfiles( model ) {
 
 }
 
+function makeTreePlacementId( placement, treeName ) {
+
+	return `${ placement.key }:${ placement.gx }:${ placement.gz }:${ treeName.toLowerCase() }`;
+
+}
+
+function getBurnedTreeColliderShape( model ) {
+
+	if ( _burnedTreeColliderShape ) return _burnedTreeColliderShape;
+	if ( ! model ) return null;
+
+	const stump = model.clone();
+	stump.updateMatrixWorld( true );
+
+	const rawBounds = new THREE.Box3().setFromObject( stump );
+	const rawSize = rawBounds.getSize( new THREE.Vector3() );
+	const scale = BURNED_TREE_TARGET_WIDTH / Math.max( rawSize.x, rawSize.z, 1e-4 );
+	stump.scale.setScalar( scale );
+	stump.updateMatrixWorld( true );
+
+	const scaledBounds = new THREE.Box3().setFromObject( stump );
+	const scaledCenter = scaledBounds.getCenter( new THREE.Vector3() );
+	stump.position.sub( scaledCenter );
+	stump.position.y -= scaledBounds.min.y;
+	stump.position.y -= 0.02;
+	stump.updateMatrixWorld( true );
+
+	const positions = collectNodeVerticesInRootSpace( stump, stump, 1 );
+	if ( positions.length < 12 ) return null;
+
+	_burnedTreeColliderShape = convexHull.create( { positions } );
+	return _burnedTreeColliderShape;
+
+}
+
 function getConvexShapeWorldPosition( shape, baseX, baseY, baseZ, rad ) {
 
 	_tmpQuatA.setFromAxisAngle( THREE.Object3D.DEFAULT_UP, rad );
@@ -495,10 +532,69 @@ export function createDecorationColliderSystem( world, models, customCells, coll
 	if ( profileCache.size === 0 ) return null;
 
 	const activeBodiesByIndex = new Map();
+	const treeIdToPlacementIndex = new Map();
+	const treeIdsByPlacementIndex = new Map();
+	const burnedTrees = new Map();
+	const burnedTreeColliderShape = getBurnedTreeColliderShape( models.wood );
 	const debugDecorationGroup = debugGroup ? new THREE.Group() : null;
 	if ( debugDecorationGroup ) debugGroup.add( debugDecorationGroup );
 	let lastCenterGX = null;
 	let lastCenterGZ = null;
+
+	for ( let index = 0; index < placements.length; index ++ ) {
+
+		const placement = placements[ index ];
+		const profiles = profileCache.get( placement.key );
+		if ( ! profiles || profiles.length === 0 ) continue;
+
+		for ( const profile of profiles ) {
+
+			if ( ! profile.name?.toLowerCase().startsWith( 'tree' ) ) continue;
+			if ( ! shouldIncludeTreeNode( profile.name, placement ) ) continue;
+
+			const treeId = makeTreePlacementId( placement, profile.name );
+			treeIdToPlacementIndex.set( treeId, index );
+
+			let placementTreeIds = treeIdsByPlacementIndex.get( index );
+			if ( ! placementTreeIds ) {
+
+				placementTreeIds = [];
+				treeIdsByPlacementIndex.set( index, placementTreeIds );
+
+			}
+
+			placementTreeIds.push( treeId );
+
+		}
+
+	}
+
+	function addStaticCollider( shape, position, quaternion, bodyIds, debugMeshes ) {
+
+		const body = rigidBody.create( world, {
+			shape,
+			motionType: MotionType.STATIC,
+			objectLayer: world._OL_STATIC,
+			position,
+			quaternion,
+			friction: 0.0,
+			restitution: 0.1,
+			collisionGroups,
+			collisionMask,
+		} );
+		bodyIds.push( body.id );
+
+		if ( debugDecorationGroup ) {
+
+			const mesh = new THREE.Mesh( getConvexHullDebugGeometry( shape ), _debugMat );
+			mesh.position.set( position[ 0 ], position[ 1 ], position[ 2 ] );
+			mesh.quaternion.set( quaternion[ 0 ], quaternion[ 1 ], quaternion[ 2 ], quaternion[ 3 ] );
+			debugDecorationGroup.add( mesh );
+			debugMeshes.push( mesh );
+
+		}
+
+	}
 
 	function activatePlacement( index ) {
 
@@ -519,29 +615,40 @@ export function createDecorationColliderSystem( world, models, customCells, coll
 		for ( const profile of profiles ) {
 
 			if ( ! shouldIncludeTreeNode( profile.name, placement ) ) continue;
-			const position = getConvexShapeWorldPosition( profile.shape, baseX, baseY, baseZ, rad );
-			const body = rigidBody.create( world, {
-				shape: profile.shape,
-				motionType: MotionType.STATIC,
-				objectLayer: world._OL_STATIC,
-				position: [ position.x, position.y, position.z ],
-				quaternion,
-				friction: 0.0,
-				restitution: 0.1,
-				collisionGroups,
-				collisionMask,
-			} );
-			bodyIds.push( body.id );
+			if ( profile.name?.toLowerCase().startsWith( 'tree' ) ) {
 
-			if ( debugDecorationGroup ) {
-
-				const mesh = new THREE.Mesh( getConvexHullDebugGeometry( profile.shape ), _debugMat );
-				mesh.position.set( position.x, position.y, position.z );
-				mesh.quaternion.set( quaternion[ 0 ], quaternion[ 1 ], quaternion[ 2 ], quaternion[ 3 ] );
-				debugDecorationGroup.add( mesh );
-				debugMeshes.push( mesh );
+				const treeId = makeTreePlacementId( placement, profile.name );
+				if ( burnedTrees.has( treeId ) ) continue;
 
 			}
+
+			const position = getConvexShapeWorldPosition( profile.shape, baseX, baseY, baseZ, rad );
+			addStaticCollider( profile.shape, [ position.x, position.y, position.z ], quaternion, bodyIds, debugMeshes );
+
+		}
+
+		const burnedTreeIds = treeIdsByPlacementIndex.get( index ) ?? [];
+
+		for ( const treeId of burnedTreeIds ) {
+
+			const burnedTree = burnedTrees.get( treeId );
+			if ( ! burnedTree || ! burnedTreeColliderShape ) continue;
+
+			const stumpQuat = [ 0, Math.sin( burnedTree.rotationY / 2 ), 0, Math.cos( burnedTree.rotationY / 2 ) ];
+			const stumpPosition = getConvexShapeWorldPosition(
+				burnedTreeColliderShape,
+				burnedTree.position.x,
+				burnedTree.position.y,
+				burnedTree.position.z,
+				burnedTree.rotationY
+			);
+			addStaticCollider(
+				burnedTreeColliderShape,
+				[ stumpPosition.x, stumpPosition.y, stumpPosition.z ],
+				stumpQuat,
+				bodyIds,
+				debugMeshes
+			);
 
 		}
 
@@ -606,7 +713,30 @@ export function createDecorationColliderSystem( world, models, customCells, coll
 
 	}
 
-	return { update, dispose };
+	function burnTree( treeId, position, rotationY = 0 ) {
+
+		if ( ! treeId || ! position ) return false;
+
+		const placementIndex = treeIdToPlacementIndex.get( treeId );
+		if ( placementIndex === undefined ) return false;
+
+		burnedTrees.set( treeId, {
+			position: position.clone ? position.clone() : new THREE.Vector3( position.x, position.y, position.z ),
+			rotationY,
+		} );
+
+		if ( activeBodiesByIndex.has( placementIndex ) ) {
+
+			deactivatePlacement( placementIndex );
+			activatePlacement( placementIndex );
+
+		}
+
+		return true;
+
+	}
+
+	return { update, dispose, burnTree };
 
 }
 

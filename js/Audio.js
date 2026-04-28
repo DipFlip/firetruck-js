@@ -249,9 +249,9 @@ export class GameAudio {
 
 	}
 
-	playBurnedUp() {
+	playBurnedUp( volumeScale = 1 ) {
 
-		this.playOneShot( this.burnedUpBuffer, BURNED_UP_VOLUME_SCALE );
+		this.playOneShot( this.burnedUpBuffer, BURNED_UP_VOLUME_SCALE * THREE.MathUtils.clamp( volumeScale, 0, 1 ) );
 
 	}
 

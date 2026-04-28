@@ -76,6 +76,13 @@ const FIRE_SPAWN_INTERVAL_MAX = 5;
 const FIRE_SPAWN_MIN_DISTANCE = 9;
 const FIRE_SPAWN_NEAR_DISTANCE = 22;
 const FIRE_SPAWN_FALLBACK_DISTANCE = 34;
+const BURNED_UP_FULL_VOLUME_DISTANCE = 8;
+const BURNED_UP_SILENT_DISTANCE = 58;
+const BURNED_UP_MIN_VOLUME_SCALE = 0.08;
+const FIRE_INDICATOR_EDGE_MARGIN = 42;
+const FIRE_INDICATOR_GROUP_SCREEN_RATIO = 0.2;
+const FIRE_INDICATOR_SIZE = 64;
+const FIRE_INDICATOR_HOVER_OFFSET = 58;
 const debugUi = document.createElement( 'label' );
 debugUi.style.position = 'absolute';
 debugUi.style.left = '16px';
@@ -161,6 +168,18 @@ waterMeterFill.style.boxShadow = '0 0 18px rgba(86, 216, 255, 0.38)';
 waterMeterTrack.appendChild( waterMeterFill );
 
 document.body.appendChild( waterMeterUi );
+
+const fireIndicatorLayer = document.createElement( 'div' );
+fireIndicatorLayer.id = 'fire-indicator-layer';
+fireIndicatorLayer.style.position = 'absolute';
+fireIndicatorLayer.style.left = '0';
+fireIndicatorLayer.style.top = '0';
+fireIndicatorLayer.style.width = '100%';
+fireIndicatorLayer.style.height = '100%';
+fireIndicatorLayer.style.pointerEvents = 'none';
+fireIndicatorLayer.style.zIndex = '12';
+fireIndicatorLayer.style.userSelect = 'none';
+document.body.appendChild( fireIndicatorLayer );
 
 const debugSphere = new THREE.Mesh(
 	new THREE.SphereGeometry( 0.5, 20, 12 ),
@@ -264,6 +283,12 @@ const _lookPointAccel = new THREE.Vector3();
 const _lookPointNormal = new THREE.Vector3();
 const _pickupSeparation = new THREE.Vector2();
 const _refillBurstTarget = new THREE.Vector3();
+const _fireIndicatorWorld = new THREE.Vector3();
+const _fireIndicatorView = new THREE.Vector3();
+const _fireIndicatorNdc = new THREE.Vector3();
+const _fireIndicatorSources = [];
+const _fireIndicatorGroups = [];
+const fireIndicatorElements = new Map();
 
 function shuffleInPlace( values ) {
 
@@ -302,6 +327,226 @@ function springOffset( current, velocity, target, dt, settleTime, dampingRatio =
 
 	velocity.addScaledVector( _lookPointAccel, dt );
 	current.addScaledVector( velocity, dt );
+
+}
+
+function createFireIndicatorElement() {
+
+	const group = document.createElement( 'div' );
+	group.className = 'fire-indicator';
+	group.style.position = 'absolute';
+	group.style.left = '0';
+	group.style.top = '0';
+	group.style.width = `${ FIRE_INDICATOR_SIZE }px`;
+	group.style.height = `${ FIRE_INDICATOR_SIZE }px`;
+	group.style.transformOrigin = '50% 50%';
+	group.style.display = 'none';
+	group.style.transition = 'none';
+
+	const arrow = document.createElement( 'div' );
+	arrow.style.position = 'absolute';
+	arrow.style.left = '9px';
+	arrow.style.top = '11px';
+	arrow.style.width = '46px';
+	arrow.style.height = '42px';
+	arrow.style.background = '#f3332f';
+	arrow.style.clipPath = 'polygon(0 0, 100% 50%, 0 100%, 28% 50%)';
+	arrow.style.filter = 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.55))';
+	arrow.style.transition = 'none';
+	group.appendChild( arrow );
+
+	const badge = document.createElement( 'div' );
+	badge.style.position = 'absolute';
+	badge.style.right = '1px';
+	badge.style.top = '0';
+	badge.style.minWidth = '24px';
+	badge.style.height = '24px';
+	badge.style.padding = '0 5px';
+	badge.style.boxSizing = 'border-box';
+	badge.style.borderRadius = '999px';
+	badge.style.background = '#1b0d0b';
+	badge.style.border = '2px solid #ffd7cf';
+	badge.style.color = '#fff1ed';
+	badge.style.font = '700 14px Arial, sans-serif';
+	badge.style.lineHeight = '20px';
+	badge.style.textAlign = 'center';
+	badge.style.display = 'none';
+	badge.style.textShadow = '0 1px 2px rgba(0, 0, 0, 0.55)';
+	group.appendChild( badge );
+
+	fireIndicatorLayer.appendChild( group );
+	return { group, arrow, badge };
+
+}
+
+function getFireIndicatorElement( key ) {
+
+	let indicator = fireIndicatorElements.get( key );
+
+	if ( ! indicator ) {
+
+		indicator = createFireIndicatorElement();
+		indicator.group.dataset.indicatorKey = key;
+		fireIndicatorElements.set( key, indicator );
+
+	}
+
+	return indicator;
+
+}
+
+function computeFireIndicatorPoint( source, camera, width, height, target ) {
+
+	_fireIndicatorWorld.copy( source.position );
+	_fireIndicatorNdc.copy( _fireIndicatorWorld ).project( camera );
+	_fireIndicatorView.copy( _fireIndicatorWorld ).applyMatrix4( camera.matrixWorldInverse );
+
+	const inFront = _fireIndicatorView.z < -0.1;
+	const isVisible = inFront &&
+		_fireIndicatorNdc.x >= -1 && _fireIndicatorNdc.x <= 1 &&
+		_fireIndicatorNdc.y >= -1 && _fireIndicatorNdc.y <= 1 &&
+		_fireIndicatorNdc.z >= -1 && _fireIndicatorNdc.z <= 1;
+
+	if ( isVisible ) {
+
+		target.kind = 'hover';
+		target.key = `hover:${ source.id }`;
+		target.ids = [ source.id ];
+		target.x = ( _fireIndicatorNdc.x * 0.5 + 0.5 ) * width;
+		target.y = ( - _fireIndicatorNdc.y * 0.5 + 0.5 ) * height;
+		target.angle = Math.PI / 2;
+		target.count = 1;
+		return target;
+
+	}
+
+	let dx = _fireIndicatorNdc.x;
+	let dy = - _fireIndicatorNdc.y;
+
+	if ( ! inFront ) {
+
+		dx = - dx;
+		dy = - dy;
+
+	}
+
+	if ( Math.abs( dx ) < 1e-5 && Math.abs( dy ) < 1e-5 ) dy = -1;
+
+	const halfW = width * 0.5 - FIRE_INDICATOR_EDGE_MARGIN;
+	const halfH = height * 0.5 - FIRE_INDICATOR_EDGE_MARGIN;
+	const scale = Math.min(
+		halfW / Math.max( Math.abs( dx ), 1e-5 ),
+		halfH / Math.max( Math.abs( dy ), 1e-5 )
+	);
+
+	target.kind = 'edge';
+	target.key = `edge:${ source.id }`;
+	target.ids = [ source.id ];
+	target.x = width * 0.5 + dx * scale;
+	target.y = height * 0.5 + dy * scale;
+	target.angle = Math.atan2( dy, dx );
+	target.count = 1;
+	return target;
+
+}
+
+function updateFireIndicators( fireTargets, camera ) {
+
+	const width = window.innerWidth;
+	const height = window.innerHeight;
+	const groupThresholdX = width * FIRE_INDICATOR_GROUP_SCREEN_RATIO;
+	const groupThresholdY = height * FIRE_INDICATOR_GROUP_SCREEN_RATIO;
+
+	fireTargets.getActiveFireIndicatorTargets( _fireIndicatorSources );
+	_fireIndicatorSources.sort( ( a, b ) => String( a.id ).localeCompare( String( b.id ) ) );
+	_fireIndicatorGroups.length = 0;
+
+	for ( const fireSource of _fireIndicatorSources ) {
+
+		const nextGroup = computeFireIndicatorPoint( fireSource, camera, width, height, {
+			kind: 'edge',
+			key: '',
+			ids: [],
+			x: 0,
+			y: 0,
+			angle: 0,
+			count: 1,
+		} );
+
+		let mergedGroup = null;
+
+		if ( nextGroup.kind === 'edge' ) {
+
+			for ( const group of _fireIndicatorGroups ) {
+
+				if ( group.kind !== 'edge' ) continue;
+				if ( Math.abs( group.x - nextGroup.x ) > groupThresholdX ) continue;
+				if ( Math.abs( group.y - nextGroup.y ) > groupThresholdY ) continue;
+				mergedGroup = group;
+				break;
+
+			}
+
+		}
+
+
+		if ( mergedGroup ) {
+
+			mergedGroup.count ++;
+			mergedGroup.ids.push( nextGroup.ids[ 0 ] );
+
+		} else {
+
+			_fireIndicatorGroups.push( nextGroup );
+
+		}
+
+	}
+
+	const activeIndicatorKeys = new Set();
+
+	for ( const group of _fireIndicatorGroups ) {
+
+		activeIndicatorKeys.add( group.key );
+
+	}
+
+	for ( const [ key, indicator ] of fireIndicatorElements ) {
+
+		if ( ! activeIndicatorKeys.has( key ) ) indicator.group.style.display = 'none';
+
+	}
+
+	for ( const group of _fireIndicatorGroups ) {
+
+		const indicator = getFireIndicatorElement( group.key );
+		const halfSize = FIRE_INDICATOR_SIZE * 0.5;
+		const x = THREE.MathUtils.clamp( group.x - halfSize, 8, width - FIRE_INDICATOR_SIZE - 8 );
+		const y = THREE.MathUtils.clamp( group.kind === 'hover'
+			? group.y - FIRE_INDICATOR_HOVER_OFFSET
+			: group.y - halfSize, 8, height - FIRE_INDICATOR_SIZE - 8 );
+		indicator.group.style.display = 'block';
+		indicator.group.dataset.kind = group.kind;
+		indicator.group.style.opacity = group.kind === 'hover' ? '0.86' : '1';
+		indicator.group.style.transform = `translate(${ x }px, ${ y }px)`;
+		indicator.arrow.style.transform = `rotate(${ group.angle }rad)`;
+		indicator.badge.style.display = group.kind === 'edge' && group.count > 1 ? 'block' : 'none';
+		indicator.badge.textContent = String( group.count );
+
+	}
+
+}
+
+function getBurnedUpVolumeScale( sourcePosition, listenerPosition ) {
+
+	const distance = sourcePosition.distanceTo( listenerPosition );
+	const t = THREE.MathUtils.clamp(
+		( distance - BURNED_UP_FULL_VOLUME_DISTANCE ) /
+		( BURNED_UP_SILENT_DISTANCE - BURNED_UP_FULL_VOLUME_DISTANCE ),
+		0,
+		1
+	);
+	return THREE.MathUtils.lerp( 1, BURNED_UP_MIN_VOLUME_SCALE, t * t );
 
 }
 
@@ -614,6 +859,7 @@ function buildFireSpawnPositions( models, customCells, bounds, spawn ) {
 			x: treePlacement.x,
 			y: treePlacement.y,
 			z: treePlacement.z,
+			treeId: treePlacement.treeId,
 			fireAmount: FIRE_START_AMOUNT,
 			rotationY: treePlacement.rotationY,
 		}, 4.25 );
@@ -626,6 +872,7 @@ function buildFireSpawnPositions( models, customCells, bounds, spawn ) {
 			x: treePlacement.x,
 			y: treePlacement.y,
 			z: treePlacement.z,
+			treeId: treePlacement.treeId,
 			fireAmount: FIRE_START_AMOUNT,
 			rotationY: treePlacement.rotationY,
 		}, 4.25 );
@@ -1588,8 +1835,13 @@ async function init() {
 		for ( const burnedTree of burnedOutTrees ) {
 
 			const treeRemoved = treeBurnController?.hideTree( burnedTree.treeId, burnedTree.position ) ?? false;
-			if ( treeRemoved ) spawnBurnedTreeStump( burnedTree.position, burnedTree.rotationY );
-			audio.playBurnedUp();
+			if ( treeRemoved ) {
+
+				decorationColliderSystem?.burnTree( burnedTree.treeId, burnedTree.position, burnedTree.rotationY );
+				spawnBurnedTreeStump( burnedTree.position, burnedTree.rotationY );
+
+			}
+			audio.playBurnedUp( getBurnedUpVolumeScale( burnedTree.position, vehicle.spherePos ) );
 
 		}
 		effects.update( dt, vehicle, waterState );
@@ -1618,6 +1870,7 @@ async function init() {
 			: '0 0 18px rgba(86, 216, 255, 0.38)';
 		waterMeterLabel.textContent = 'WATER TANK';
 		statusUi.textContent = `Score: ${ score }  |  Fires: ${ fireTargets.getActiveCount() }\nDrive: WASD  |  Water: Arrows`;
+		updateFireIndicators( fireTargets, cam.camera );
 
 		renderer.render( scene, cam.camera );
 

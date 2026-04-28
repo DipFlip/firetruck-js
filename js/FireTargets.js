@@ -334,6 +334,7 @@ export class FireTargetSystem {
 		this.targets = [];
 		this.flameTexture = createFlameTexture();
 		this.debugVisible = false;
+		this.nextTargetId = 1;
 
 		for ( const position of positions ) {
 
@@ -361,6 +362,7 @@ export class FireTargetSystem {
 			healthBarGroup: targetVisual.healthBarGroup,
 			healthBar: targetVisual.healthBar,
 			treeId: position.treeId ?? null,
+			indicatorId: position.treeId ?? `fire-${ this.nextTargetId ++ }`,
 			treeHp: position.treeHp ?? TREE_START_HP,
 			fireAmount: position.fireAmount ?? DEFAULT_FIRE_AMOUNT,
 			hitSmokeCooldown: 0,
@@ -568,6 +570,45 @@ export class FireTargetSystem {
 		}
 
 		return count;
+
+	}
+
+	getActiveFireWorldPositions( target = [] ) {
+
+		target.length = 0;
+
+		for ( const fireTarget of this.targets ) {
+
+			if ( fireTarget.extinguished || fireTarget.fireAmount <= 0 ) continue;
+
+			fireTarget.group.updateWorldMatrix( true, true );
+			fireTarget.flameGroup.getWorldPosition( _worldHit );
+			target.push( _worldHit.clone() );
+
+		}
+
+		return target;
+
+	}
+
+	getActiveFireIndicatorTargets( target = [] ) {
+
+		target.length = 0;
+
+		for ( const fireTarget of this.targets ) {
+
+			if ( fireTarget.extinguished || fireTarget.fireAmount <= 0 ) continue;
+
+			fireTarget.group.updateWorldMatrix( true, false );
+			_tmpVec.set( 0, fireTarget.colliderBox.max.y + 1.25, 0 ).applyMatrix4( fireTarget.group.matrixWorld );
+			target.push( {
+				id: fireTarget.indicatorId,
+				position: _tmpVec.clone(),
+			} );
+
+		}
+
+		return target;
 
 	}
 
